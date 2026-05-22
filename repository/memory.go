@@ -4,33 +4,41 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 )
 
 type MemoryRepository struct {
-	db *sqlx.DB
+	db          *sqlx.DB
+	UserID      string
+	CharacterID string
 }
 
 func NewMemoryRepository(db *sqlx.DB) *MemoryRepository {
-	return &MemoryRepository{db: db}
+	return &MemoryRepository{db: db, UserID: "default", CharacterID: "default"}
 }
 
-// GetOrCreateConversationID は「平均値判定」を行い、適切な会話IDを返す
-func (r *MemoryRepository) GetOrCreateConversationID(embedding []float64, avgThreshold float64, maxThreshold float64) (string, error) {
-	var convID string
-	// pgvectorの形式に合わせてベクトルを文字列化
+type Memory struct {
+	Role      string    `db:"role"`
+	Content   string    `db:"content"`
+	CreatedAt time.Time `db:"created_at"`
+}
+
+func (r *MemoryRepository) GetOrCreateConversationID(embedding []float64, avgThreshold float64, maxThreshold float64) (string, bool, error) {
 	embeddingStr := fmt.Sprintf("[%s]", strings.Trim(strings.Join(strings.Fields(fmt.Sprint(embedding)), ","), "[]"))
-	
-	query := `SELECT get_or_create_conversation_id($1::vector, $2, $3)`
-	err := r.db.Get(&convID, query, embeddingStr, avgThreshold, maxThreshold)
-	if err != nil {
-		return "", err
+	var result struct {
+		ConvID string `db:"conv_id"`
+		IsNew  bool   `db:"is_new"`
 	}
-	return convID, nil
+	query := `SELECT conv_id, is_new FROM get_or_create_conversation_id($1::vector, $2, $3, $4, $5)`
+	err := r.db.Get(&result, query, embeddingStr, avgThreshold, maxThreshold, r.UserID, r.CharacterID)
+	if err != nil {
+		return "", false, err
+	}
+	return result.ConvID, result.IsNew, nil
 }
 
-// SaveMemory は発言と、判定された会話IDをDBに保存する
 func (r *MemoryRepository) SaveMemory(content string, embedding []float64, role string, convID string) error {
 	var embeddingJSON interface{}
 	if embedding != nil {
@@ -40,48 +48,58 @@ func (r *MemoryRepository) SaveMemory(content string, embedding []float64, role 
 			return err
 		}
 	}
-
-	query := `INSERT INTO memories (content, embedding, role, conversation_id) 
-              VALUES ($1, $2, $3, $4)`
-	_, err := r.db.Exec(query, content, embeddingJSON, role, convID)
+	query := `INSERT INTO memories (content, embedding, role, conversation_id, user_id, character_id)
+	          VALUES ($1, $2, $3, $4, $5, $6)`
+	_, err := r.db.Exec(query, content, embeddingJSON, role, convID, r.UserID, r.CharacterID)
 	return err
 }
 
-// Memory は取得用の構造体
-type Memory struct {
-    Role    string `db:"role"`
-    Content string `db:"content"`
-}
-
-// GetRecentMemories は指定された会話IDに紐づく直近のやり取りを取得する
 func (r *MemoryRepository) GetRecentMemories(convID string, limit int) ([]Memory, error) {
-    var memories []Memory
-    
-    // 最新のlimit件を取得しつつ、表示は古い順（時系列）にするためのサブクエリ
-    query := `
-        SELECT role, content FROM (
-            SELECT role, content, id 
-            FROM memories 
-            WHERE conversation_id = $1 
-            ORDER BY id DESC 
-            LIMIT $2
-        ) AS recent 
-        ORDER BY id ASC`
-    
-    err := r.db.Select(&memories, query, convID, limit)
-    if err != nil {
-        return nil, err
-    }
-    return memories, nil
+	var memories []Memory
+	query := `
+		SELECT role, content, created_at FROM (
+			SELECT role, content, created_at, id
+			FROM memories
+			WHERE conversation_id = $1
+			ORDER BY id DESC
+			LIMIT $2
+		) AS recent
+		ORDER BY id ASC`
+	err := r.db.Select(&memories, query, convID, limit)
+	return memories, err
 }
 
 func (r *MemoryRepository) GetSetting(key string, defaultValue string) string {
-    var value string
-    query := `SELECT value FROM settings WHERE key = $1`
-    err := r.db.Get(&value, query, key)
-    if err != nil {
-        return defaultValue
-    }
-    return value
+	var value string
+	err := r.db.Get(&value, `SELECT value FROM settings WHERE key = $1`, key)
+	if err != nil {
+		return defaultValue
+	}
+	return value
 }
 
+func (r *MemoryRepository) GetLastMessageTime() (time.Time, error) {
+	var t time.Time
+	err := r.db.Get(&t, `SELECT created_at FROM memories WHERE user_id = $1 AND character_id = $2 ORDER BY id DESC LIMIT 1`, r.UserID, r.CharacterID)
+	return t, err
+}
+
+func (r *MemoryRepository) GetLastMemory() (string, error) {
+	var content string
+	err := r.db.Get(&content, `SELECT content FROM memories WHERE user_id = $1 AND character_id = $2 ORDER BY id DESC LIMIT 1`, r.UserID, r.CharacterID)
+	return content, err
+}
+
+// GetCharacterIDByChannel はチャンネルIDからcharacter_idを返す
+// charactersテーブルのproactive_channelと照合する
+func (r *MemoryRepository) GetCharacterIDByChannel(channelID string) string {
+	var id string
+	err := r.db.Get(&id,
+		`SELECT id FROM characters WHERE proactive_channel = $1 AND active = TRUE LIMIT 1`,
+		channelID,
+	)
+	if err != nil {
+		return "group" // マッピングなし→将来のグループチャット扱い
+	}
+	return id
+}
