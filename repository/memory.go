@@ -19,10 +19,25 @@ func NewMemoryRepository(db *sqlx.DB) *MemoryRepository {
 	return &MemoryRepository{db: db, UserID: "default", CharacterID: "default"}
 }
 
+// WithIDs はUserIDとCharacterIDを指定した新しいリポジトリを返す（goroutine用）
+func (r *MemoryRepository) WithIDs(userID, characterID string) *MemoryRepository {
+	return &MemoryRepository{
+		db:          r.db,
+		UserID:      userID,
+		CharacterID: characterID,
+	}
+}
+
 type Memory struct {
-	Role      string    `db:"role"`
-	Content   string    `db:"content"`
-	CreatedAt time.Time `db:"created_at"`
+	Role           string    `db:"role"`
+	Content        string    `db:"content"`
+	CreatedAt      time.Time `db:"created_at"`
+	ConversationID string    `db:"conversation_id"`
+}
+
+// DB はDBインスタンスを返す
+func (r *MemoryRepository) DB() *sqlx.DB {
+	return r.db
 }
 
 func (r *MemoryRepository) GetOrCreateConversationID(embedding []float64, avgThreshold float64, maxThreshold float64) (string, bool, error) {
@@ -56,16 +71,29 @@ func (r *MemoryRepository) SaveMemory(content string, embedding []float64, role 
 
 func (r *MemoryRepository) GetRecentMemories(convID string, limit int) ([]Memory, error) {
 	var memories []Memory
+	// conversation_idをまたいで直近N件取得
 	query := `
-		SELECT role, content, created_at FROM (
-			SELECT role, content, created_at, id
+		SELECT role, content, created_at, conversation_id FROM (
+			SELECT role, content, created_at, id, conversation_id
 			FROM memories
-			WHERE conversation_id = $1
+			WHERE user_id = $1 AND character_id = $2
 			ORDER BY id DESC
-			LIMIT $2
+			LIMIT $3
 		) AS recent
 		ORDER BY id ASC`
-	err := r.db.Select(&memories, query, convID, limit)
+	err := r.db.Select(&memories, query, r.UserID, r.CharacterID, limit)
+	return memories, err
+}
+
+// GetAllMemoriesInConversation は指定conversationの全件を取得する
+func (r *MemoryRepository) GetAllMemoriesInConversation(convID string) ([]Memory, error) {
+	var memories []Memory
+	query := `
+		SELECT role, content, created_at
+		FROM memories
+		WHERE conversation_id = $1
+		ORDER BY id ASC`
+	err := r.db.Select(&memories, query, convID)
 	return memories, err
 }
 
@@ -99,7 +127,7 @@ func (r *MemoryRepository) GetCharacterIDByChannel(channelID string) string {
 		channelID,
 	)
 	if err != nil {
-		return "group" // マッピングなし→将来のグループチャット扱い
+		return "group" // マッピングなし→将来のグループチャット扱い（反応しない）
 	}
 	return id
 }

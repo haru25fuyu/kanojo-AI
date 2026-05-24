@@ -17,6 +17,68 @@ type TopicAssessment struct {
 }
 
 // RunNightlyBatch は深夜バッチのエントリポイント
+// MergeTopics は類似したtopicを統合する
+func (r *MemoryRepository) MergeTopics(threshold float64) error {
+	// embeddingが存在するtopicを全件取得
+	var topics []struct {
+		ID      string  `db:"id"`
+		Summary string  `db:"summary"`
+		Heat    float64 `db:"heat"`
+	}
+	err := r.db.Select(&topics, `
+		SELECT id, summary, heat FROM topics
+		WHERE embedding IS NOT NULL
+		  AND character_id = $1
+		  AND summary != ''
+		ORDER BY heat DESC`, r.CharacterID)
+	if err != nil || len(topics) < 2 {
+		return err
+	}
+
+	merged := map[string]bool{}
+
+	for i := 0; i < len(topics); i++ {
+		if merged[topics[i].ID] {
+			continue
+		}
+		for j := i + 1; j < len(topics); j++ {
+			if merged[topics[j].ID] {
+				continue
+			}
+
+			// 2つのtopic間の類似度を計算
+			var sim float64
+			err := r.db.Get(&sim, `
+				SELECT 1 - (a.embedding <=> b.embedding)
+				FROM topics a, topics b
+				WHERE a.id = $1 AND b.id = $2`,
+				topics[i].ID, topics[j].ID,
+			)
+			if err != nil || sim < threshold {
+				continue
+			}
+
+			// topics[j]をtopics[i]に統合
+			// conversation_topicsの紐づけを更新
+			r.db.Exec(`
+				UPDATE conversation_topics SET topic_id = $1
+				WHERE topic_id = $2`, topics[i].ID, topics[j].ID)
+
+			// 熱量を合算
+			r.db.Exec(`
+				UPDATE topics SET heat = heat + $1 WHERE id = $2`,
+				topics[j].Heat, topics[i].ID)
+
+			// 古いtopicを削除
+			r.db.Exec(`DELETE FROM topics WHERE id = $1`, topics[j].ID)
+
+			merged[topics[j].ID] = true
+			log.Printf("topic merge: %s ← %s (sim: %.3f)", topics[i].ID, topics[j].ID, sim)
+		}
+	}
+	return nil
+}
+
 func (r *MemoryRepository) RunNightlyBatch(modelBatch string) {
 	log.Println("深夜バッチ開始")
 
@@ -56,6 +118,14 @@ func (r *MemoryRepository) RunNightlyBatch(modelBatch string) {
 			topic.ID, newHeat, assessment.Keywords, assessment.Summary)
 	}
 
+	// topic merge（類似話題を統合）
+	mergeThreshold := 0.85
+	if err := r.MergeTopics(mergeThreshold); err != nil {
+		log.Printf("topic merge失敗: %v", err)
+	} else {
+		log.Println("topic merge完了")
+	}
+
 	log.Println("深夜バッチ完了")
 }
 
@@ -63,7 +133,7 @@ func (r *MemoryRepository) RunNightlyBatch(modelBatch string) {
 func AssessTopic(ctx context.Context, model string, memories []Memory) (*TopicAssessment, error) {
 	var sb strings.Builder
 	for _, m := range memories {
-		sb.WriteString(m.Role + ": " + m.Content + "\n")
+		fmt.Fprintf(&sb, "%s: %s\n", m.Role, m.Content)
 	}
 
 	messages := []gemini.Message{
@@ -71,6 +141,11 @@ func AssessTopic(ctx context.Context, model string, memories []Memory) (*TopicAs
 			Role: "system",
 			Content: `あなたは会話の分析AIです。
 与えられた会話履歴を分析し、以下のJSONのみを返してください。他の文字は一切出力しないでください。
+
+【要約のルール】
+- 「アシスタント」「AI」という表現は使わない
+- キャラクターを「彼女」「相手」などと表現する
+- ユーザー視点の自然な会話の要約にする
 
 {
   "keywords": ["キーワード1", "キーワード2", "キーワード3"],

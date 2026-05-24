@@ -23,15 +23,15 @@ func (r *MemoryRepository) UpsertUserInfo(key, value string, importance float64,
 		return err
 	}
 	query := `
-		INSERT INTO user_info (user_id, key, value, importance, mention_count, embedding, updated_at)
-		VALUES ($1, $2, $3, $4, 1, $5, NOW())
-		ON CONFLICT (user_id, key) DO UPDATE SET
+		INSERT INTO user_info (user_id, character_id, key, value, importance, mention_count, embedding, updated_at)
+		VALUES ($1, $2, $3, $4, $5, 1, $6, NOW())
+		ON CONFLICT (user_id, character_id, key) DO UPDATE SET
 			value         = EXCLUDED.value,
 			importance    = EXCLUDED.importance,
 			mention_count = user_info.mention_count + 1,
 			embedding     = EXCLUDED.embedding,
 			updated_at    = NOW()`
-	_, err = r.db.Exec(query, r.UserID, key, value, importance, embeddingJSON)
+	_, err = r.db.Exec(query, r.UserID, r.CharacterID, key, value, importance, embeddingJSON)
 	return err
 }
 
@@ -41,10 +41,10 @@ func (r *MemoryRepository) GetTopUserInfo(limit int) ([]UserInfo, error) {
 	query := `
 		SELECT key, value, importance, mention_count, updated_at
 		FROM user_info
-		WHERE user_id = $2
+		WHERE user_id = $2 AND character_id = $3
 		ORDER BY importance * ln(mention_count + 1) DESC
 		LIMIT $1`
-	err := r.db.Select(&infos, query, limit, r.UserID)
+	err := r.db.Select(&infos, query, limit, r.UserID, r.CharacterID)
 	return infos, err
 }
 

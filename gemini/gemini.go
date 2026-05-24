@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 const baseURL = "https://generativelanguage.googleapis.com/v1beta"
@@ -29,8 +30,9 @@ type StatusDelta struct {
 }
 
 type ChatResponse struct {
-	Reply string
-	Delta StatusDelta
+	Reply     string
+	ReplyType string // "normal", "short", "skip"
+	Delta     StatusDelta
 }
 
 type EventResponse struct {
@@ -201,8 +203,14 @@ func GetChatResponseWithStatus(ctx context.Context, model string, messages []Mes
 		Role: "system",
 		Content: `返答は必ず以下のJSON形式のみで返してください。
 
+reply_typeの判断基準：
+- "normal": 通常の返答
+- "short": 短い返事だけ（疲れてる・忙しい・素っ気ない時）
+- "skip": 返信しない（Trust低いのに深い話、しつこい、どうでもいい内容、気分が悪い時など）
+
 {
-  "reply": "返答テキスト",
+  "reply": "返答テキスト（skipの場合は空文字）",
+  "reply_type": "normal" または "short" または "skip",
   "delta": {
     "affection": 増減値（整数）,
     "trust": 増減値,
@@ -216,8 +224,10 @@ func GetChatResponseWithStatus(ctx context.Context, model string, messages []Mes
 
 	rawResponse, err := GetChatResponseWithContext(ctx, model, augmented)
 	if err != nil {
+		log.Printf("GetChatResponseWithContext失敗: %v", err)
 		return nil, err
 	}
+	log.Printf("Gemini生返答: %s", rawResponse[:min(len(rawResponse), 200)])
 
 	rawResponse = strings.TrimSpace(rawResponse)
 	start := strings.Index(rawResponse, "{")
@@ -227,17 +237,21 @@ func GetChatResponseWithStatus(ctx context.Context, model string, messages []Mes
 	}
 
 	var result struct {
-		Reply string      `json:"reply"`
-		Delta StatusDelta `json:"delta"`
+		Reply     string      `json:"reply"`
+		ReplyType string      `json:"reply_type"`
+		Delta     StatusDelta `json:"delta"`
 	}
 	if err := json.Unmarshal([]byte(rawResponse[start:end+1]), &result); err != nil {
-		return &ChatResponse{Reply: rawResponse}, nil
+		return &ChatResponse{Reply: rawResponse, ReplyType: "normal"}, nil
 	}
-	return &ChatResponse{Reply: result.Reply, Delta: result.Delta}, nil
+	if result.ReplyType == "" {
+		result.ReplyType = "normal"
+	}
+	return &ChatResponse{Reply: result.Reply, ReplyType: result.ReplyType, Delta: result.Delta}, nil
 }
 
 // GenerateEvent はパートナーの生活イベントを生成する
-func GenerateEvent(ctx context.Context, model string, status string, hour int) (*EventResponse, error) {
+func GenerateEvent(ctx context.Context, model string, status string, hour int, charaPrompt string) (*EventResponse, error) {
 	timeOfDay := "昼"
 	switch {
 	case hour >= 5 && hour < 10:
@@ -301,22 +315,22 @@ func GenerateProactiveMessage(ctx context.Context, model string, payload Proacti
 	url := fmt.Sprintf("%s/models/%s:generateContent?key=%s", baseURL, model, apiKey)
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("現在時刻: %s\n", payload.CurrentTime))
-	sb.WriteString(fmt.Sprintf("経過時間: %s\n", payload.ElapsedTime))
-	sb.WriteString(fmt.Sprintf("現在のステータス: %s\n", payload.Status))
+	fmt.Fprintf(&sb, "現在時刻: %s\n", payload.CurrentTime)
+	fmt.Fprintf(&sb, "経過時間: %s\n", payload.ElapsedTime)
+	fmt.Fprintf(&sb, "現在のステータス: %s\n", payload.Status)
 	if payload.LastMessage != "" {
-		sb.WriteString(fmt.Sprintf("最後の会話: %s\n", payload.LastMessage))
+		fmt.Fprintf(&sb, "最後の会話: %s\n", payload.LastMessage)
 	}
 	if len(payload.RecentEvents) > 0 {
 		sb.WriteString("最近あったこと:\n")
 		for _, e := range payload.RecentEvents {
-			sb.WriteString(fmt.Sprintf("  - %s\n", e))
+			fmt.Fprintf(&sb, "  - %s\n", e)
 		}
 	}
 	if len(payload.HotTopics) > 0 {
 		sb.WriteString("よく話してる話題:\n")
 		for _, t := range payload.HotTopics {
-			sb.WriteString(fmt.Sprintf("  - %s\n", t))
+			fmt.Fprintf(&sb, "  - %s\n", t)
 		}
 	}
 
@@ -333,8 +347,14 @@ func GenerateProactiveMessage(ctx context.Context, model string, payload Proacti
   "message": "送る場合のメッセージ（送らない場合は空文字）"
 }
 
-送る場合は最近のイベントや話題に絡めて自然に話しかけてください。
-web検索で最新情報があれば積極的に使ってください。`,
+【重要なルール】
+- ユーザーと過去に話したことのある話題か、自分の実際のイベントをベースにする
+- 架空の体験談・嘘のエピソードは絶対に作らない
+- 「一緒に〜しない？」などユーザーを誘う内容は禁止
+- 1回のメッセージは3文以内、80文字程度
+- web検索で最新情報があれば、過去の話題に関連する場合のみ使う
+- web検索の結果は話題のきっかけとして使うだけで、自分の体験として語らない
+- 例：「〇〇のイベントあるみたいだけど知ってる？」はOK、「〇〇に行ってきたよ！」はNG`,
 		},
 		{Role: "user", Content: sb.String()},
 	}
@@ -375,28 +395,45 @@ type UserInfoItem struct {
 	Importance float64 `json:"importance"`
 }
 
-// ExtractUserInfo は会話からユーザー情報を抽出する
-func ExtractUserInfo(ctx context.Context, model string, memories []string) ([]UserInfoItem, error) {
+// ExtractInfoResult はユーザー情報とキャラ情報の両方を含む
+type ExtractInfoResult struct {
+	UserInfo  []UserInfoItem `json:"user_info"`
+	CharaInfo []UserInfoItem `json:"chara_info"`
+}
+
+// ExtractUserInfo は会話からユーザー情報とキャラ情報を同時に抽出する
+func ExtractUserInfo(ctx context.Context, model string, memories []string) (*ExtractInfoResult, error) {
 	var sb strings.Builder
 	for _, m := range memories {
-		sb.WriteString(m + "\n")
+		fmt.Fprintf(&sb, "%s\n", m)
 	}
 
 	messages := []Message{
 		{
 			Role: "system",
-			Content: `あなたは会話からユーザー（人間側）の情報を抽出するAIです。
-以下のJSON配列のみを返してください。抽出できる情報がなければ空配列を返してください。
+			Content: `あなたは会話の分析AIです。
+会話からユーザーとキャラクターの情報を抽出し、以下のJSONのみを返してください。
 
-[
-  {
-    "key": "情報のキー（例：名前、職業、好きな食べ物、趣味）",
-    "value": "情報の値",
-    "importance": 0.0から1.0（名前・誕生日=1.0、職業・趣味=0.7、一時的な気分=0.2）
-  }
-]
+{
+  "user_info": [
+    {
+      "key": "情報のキー（例：名前、職業、趣味）",
+      "value": "情報の値",
+      "importance": 0.0から1.0（名前・誕生日=1.0、職業・趣味=0.7、一時的な気分=0.2）
+    }
+  ],
+  "chara_info": [
+    {
+      "key": "キャラクターの情報キー（例：好きな食べ物、口癖、経験したこと）",
+      "value": "情報の値",
+      "importance": 0.0から1.0
+    }
+  ]
+}
 
-ユーザー自身の属性・性質のみ抽出してください。AIの情報や会話の内容は含めないでください。`,
+user_info：ユーザー（人間側）の属性・性質のみ
+chara_info：キャラクター側が発言した情報・経験・好みのみ
+抽出できない場合は空配列を返してください。`,
 		},
 		{
 			Role:    "user",
@@ -410,17 +447,17 @@ func ExtractUserInfo(ctx context.Context, model string, memories []string) ([]Us
 	}
 
 	rawResponse = strings.TrimSpace(rawResponse)
-	start := strings.Index(rawResponse, "[")
-	end := strings.LastIndex(rawResponse, "]")
+	start := strings.Index(rawResponse, "{")
+	end := strings.LastIndex(rawResponse, "}")
 	if start == -1 || end == -1 {
 		return nil, nil
 	}
 
-	var items []UserInfoItem
-	if err := json.Unmarshal([]byte(rawResponse[start:end+1]), &items); err != nil {
+	var result ExtractInfoResult
+	if err := json.Unmarshal([]byte(rawResponse[start:end+1]), &result); err != nil {
 		return nil, err
 	}
-	return items, nil
+	return &result, nil
 }
 
 // ScheduleItem はLLMが抽出したスケジュール・記念日
@@ -434,7 +471,7 @@ type ScheduleItem struct {
 func ExtractSchedules(ctx context.Context, model string, memories []string) ([]ScheduleItem, error) {
 	var sb strings.Builder
 	for _, m := range memories {
-		sb.WriteString(m + "\n")
+		fmt.Fprintf(&sb, "%s\n", m)
 	}
 
 	messages := []Message{
@@ -454,7 +491,7 @@ func ExtractSchedules(ctx context.Context, model string, memories []string) ([]S
 
 「明日朝早い」→ repeat:false、明日の日付
 「誕生日は5月3日」→ repeat:true、MM-DD形式
-日付が不明なものは抽出しないでください。`, strings.Split(fmt.Sprintf("%v", fmt.Sprintf("%s", "2006-01-02")), " ")[0]),
+日付が不明なものは抽出しないでください。`, time.Now().Format("2006-01-02")),
 		},
 		{
 			Role:    "user",
@@ -479,4 +516,11 @@ func ExtractSchedules(ctx context.Context, model string, memories []string) ([]S
 		return nil, err
 	}
 	return items, nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

@@ -86,20 +86,17 @@ func RunMigrations(db *sqlx.DB) {
 			sql: `CREATE TABLE IF NOT EXISTS partner_status (
 				user_id      TEXT        NOT NULL DEFAULT 'default',
 				character_id TEXT        NOT NULL DEFAULT 'default',
-				affection    INT         NOT NULL DEFAULT 50  CHECK (affection  BETWEEN 0 AND 100),
-				trust        INT         NOT NULL DEFAULT 10  CHECK (trust      BETWEEN 0 AND 100),
-				fatigue      INT         NOT NULL DEFAULT 0   CHECK (fatigue    BETWEEN 0 AND 100),
-				mood         INT         NOT NULL DEFAULT 0   CHECK (mood       BETWEEN -100 AND 100),
-				stress       INT         NOT NULL DEFAULT 0   CHECK (stress     BETWEEN 0 AND 100),
-				energy       INT         NOT NULL DEFAULT 100 CHECK (energy     BETWEEN 0 AND 100),
+				affection    INT         NOT NULL DEFAULT 3500  CHECK (affection  BETWEEN 0 AND 10000),
+				trust        INT         NOT NULL DEFAULT 500   CHECK (trust      BETWEEN 0 AND 10000),
+				fatigue      INT         NOT NULL DEFAULT 2000  CHECK (fatigue    BETWEEN 0 AND 10000),
+				mood         INT         NOT NULL DEFAULT 0     CHECK (mood       BETWEEN -10000 AND 10000),
+				stress       INT         NOT NULL DEFAULT 1500  CHECK (stress     BETWEEN 0 AND 10000),
+				energy       INT         NOT NULL DEFAULT 8000  CHECK (energy     BETWEEN 0 AND 10000),
 				updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 				PRIMARY KEY (user_id, character_id)
 			)`,
 		},
-		{
-			name: "default partner_status",
-			sql:  `INSERT INTO partner_status (user_id, character_id) VALUES ('default', 'saya') ON CONFLICT DO NOTHING`,
-		},
+
 		{
 			name: "partner_events",
 			sql: `CREATE TABLE IF NOT EXISTS partner_events (
@@ -119,19 +116,38 @@ func RunMigrations(db *sqlx.DB) {
 			name: "user_info",
 			sql: `CREATE TABLE IF NOT EXISTS user_info (
 				user_id       TEXT        NOT NULL DEFAULT 'default',
+				character_id  TEXT        NOT NULL DEFAULT 'default',
 				key           TEXT        NOT NULL,
 				value         TEXT        NOT NULL,
 				importance    FLOAT       NOT NULL DEFAULT 0.5,
 				mention_count INT         NOT NULL DEFAULT 1,
 				embedding     vector(1536),
 				updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-				PRIMARY KEY (user_id, key)
+				PRIMARY KEY (user_id, character_id, key)
 			)`,
 		},
 		{
 			name: "user_info embedding index",
 			sql: `CREATE INDEX IF NOT EXISTS user_info_embedding_idx
 				ON user_info USING hnsw (embedding vector_cosine_ops)`,
+		},
+		{
+			name: "chara_info",
+			sql: `CREATE TABLE IF NOT EXISTS chara_info (
+				character_id  TEXT        NOT NULL,
+				key           TEXT        NOT NULL,
+				value         TEXT        NOT NULL,
+				importance    FLOAT       NOT NULL DEFAULT 0.5,
+				mention_count INT         NOT NULL DEFAULT 1,
+				embedding     vector(1536),
+				updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				PRIMARY KEY (character_id, key)
+			)`,
+		},
+		{
+			name: "chara_info embedding index",
+			sql: `CREATE INDEX IF NOT EXISTS chara_info_embedding_idx
+				ON chara_info USING hnsw (embedding vector_cosine_ops)`,
 		},
 		{
 			name: "schedules",

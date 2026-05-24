@@ -53,9 +53,10 @@ func (r *MemoryRepository) SearchTopicsByKeywords(keywords []string) ([]Topic, e
 	query := `
 		SELECT id, keywords, summary, heat FROM topics
 		WHERE keywords && $1
+		  AND character_id = $2
 		ORDER BY heat DESC
 		LIMIT 3`
-	err := r.db.Select(&topics, query, pq.Array(keywords))
+	err := r.db.Select(&topics, query, pq.Array(keywords), r.CharacterID)
 	return topics, err
 }
 
@@ -66,10 +67,11 @@ func (r *MemoryRepository) SearchTopicsByEmbedding(embedding []float64, threshol
 	query := `
 		SELECT id, keywords, summary, heat FROM topics
 		WHERE embedding IS NOT NULL
+		  AND character_id = $3
 		  AND (embedding <=> $1::vector) < $2
 		ORDER BY (embedding <=> $1::vector) ASC
 		LIMIT 3`
-	err := r.db.Select(&topics, query, embeddingStr, 1.0-threshold)
+	err := r.db.Select(&topics, query, embeddingStr, 1.0-threshold, r.CharacterID)
 	return topics, err
 }
 
