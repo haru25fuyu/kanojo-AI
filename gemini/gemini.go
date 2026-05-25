@@ -3,6 +3,7 @@ package gemini
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -354,7 +355,9 @@ func GenerateProactiveMessage(ctx context.Context, model string, payload Proacti
 - 1回のメッセージは3文以内、80文字程度
 - web検索で最新情報があれば、過去の話題に関連する場合のみ使う
 - web検索の結果は話題のきっかけとして使うだけで、自分の体験として語らない
-- 例：「〇〇のイベントあるみたいだけど知ってる？」はOK、「〇〇に行ってきたよ！」はNG`,
+- 例：「〇〇のイベントあるみたいだけど知ってる？」はOK、「〇〇に行ってきたよ！」はNG
+- 最後の会話が未完了・盛り上がっていた・続きがありそうな場合はsend: falseにする
+- 「おやすみ」「また明日」など会話を締めた直後もsend: falseにする`,
 		},
 		{Role: "user", Content: sb.String()},
 	}
@@ -401,38 +404,52 @@ type ExtractInfoResult struct {
 	CharaInfo []UserInfoItem `json:"chara_info"`
 }
 
+// ExtractInfoMemory は抽出用のメモリ構造体
+type ExtractInfoMemory struct {
+	Role    string
+	Content string
+}
+
 // ExtractUserInfo は会話からユーザー情報とキャラ情報を同時に抽出する
-func ExtractUserInfo(ctx context.Context, model string, memories []string) (*ExtractInfoResult, error) {
+func ExtractUserInfo(ctx context.Context, model string, memories []ExtractInfoMemory) (*ExtractInfoResult, error) {
 	var sb strings.Builder
 	for _, m := range memories {
-		fmt.Fprintf(&sb, "%s\n", m)
+		role := "ユーザー"
+		if m.Role == "assistant" || m.Role == "proactive" {
+			role = "キャラクター"
+		}
+		fmt.Fprintf(&sb, "%s: %s\n", role, m.Content)
 	}
 
 	messages := []Message{
 		{
 			Role: "system",
 			Content: `あなたは会話の分析AIです。
-会話からユーザーとキャラクターの情報を抽出し、以下のJSONのみを返してください。
+「ユーザー:」と「キャラクター:」で始まる会話から情報を抽出し、以下のJSONのみを返してください。
+
+ルール：
+- user_info：「ユーザー:」の発言で自分自身について述べた情報、またはキャラクターがユーザーについて言及した情報
+- chara_info：「キャラクター:」の発言で自分自身について述べた情報、またはユーザーがキャラクターについて言及した情報
+- 呼びかけ（〇〇くん、〇〇ちゃん）から相手の名前を抽出する
+- 自分自身への呼びかけは自分のinfoとして抽出する
 
 {
   "user_info": [
     {
       "key": "情報のキー（例：名前、職業、趣味）",
       "value": "情報の値",
-      "importance": 0.0から1.0（名前・誕生日=1.0、職業・趣味=0.7、一時的な気分=0.2）
+      "importance": 0.0から1.0（名前=1.0、職業・趣味=0.7、一時的な気分=0.2）
     }
   ],
   "chara_info": [
     {
-      "key": "キャラクターの情報キー（例：好きな食べ物、口癖、経験したこと）",
+      "key": "キャラクターの情報キー",
       "value": "情報の値",
       "importance": 0.0から1.0
     }
   ]
 }
 
-user_info：ユーザー（人間側）の属性・性質のみ
-chara_info：キャラクター側が発言した情報・経験・好みのみ
 抽出できない場合は空配列を返してください。`,
 		},
 		{
@@ -523,4 +540,168 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// DescribeImage は画像の内容を一言で説明する
+func DescribeImage(ctx context.Context, model string, imageURL string) (string, error) {
+	apiKey := os.Getenv("GEMINI_API_KEY")
+	url := fmt.Sprintf("%s/models/%s:generateContent?key=%s", baseURL, model, apiKey)
+
+	resp, err := http.Get(imageURL)
+	if err != nil {
+		return "", fmt.Errorf("画像ダウンロード失敗: %w", err)
+	}
+	defer resp.Body.Close()
+
+	imageData, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("画像読み込み失敗: %w", err)
+	}
+
+	mimeType := resp.Header.Get("Content-Type")
+	if mimeType == "" {
+		mimeType = "image/jpeg"
+	}
+
+	base64Image := base64.StdEncoding.EncodeToString(imageData)
+
+	payload := map[string]interface{}{
+		"contents": []map[string]interface{}{
+			{
+				"role": "user",
+				"parts": []map[string]interface{}{
+					{"text": "この画像を10文字程度で一言で説明してください。日本語で。"},
+					{
+						"inline_data": map[string]interface{}{
+							"mime_type": mimeType,
+							"data":      base64Image,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	body, err := callGemini(ctx, url, payload)
+	if err != nil {
+		return "", err
+	}
+	return parseTextResponse(body)
+}
+
+// GetChatResponseWithImage は画像付きでChatResponseを生成する
+func GetChatResponseWithImage(ctx context.Context, model string, messages []Message, imageURL string, statusText string) (*ChatResponse, error) {
+	apiKey := os.Getenv("GEMINI_API_KEY")
+	url := fmt.Sprintf("%s/models/%s:generateContent?key=%s", baseURL, model, apiKey)
+
+	// 画像をダウンロードしてbase64に変換
+	resp, err := http.Get(imageURL)
+	if err != nil {
+		return nil, fmt.Errorf("画像ダウンロード失敗: %w", err)
+	}
+	defer resp.Body.Close()
+
+	imageData, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("画像読み込み失敗: %w", err)
+	}
+
+	mimeType := resp.Header.Get("Content-Type")
+	if mimeType == "" {
+		mimeType = "image/jpeg"
+	}
+
+	base64Image := base64.StdEncoding.EncodeToString(imageData)
+
+	// statusとJSONフォーマット指示を追加
+	augmented := append([]Message{}, messages...)
+	if statusText != "" {
+		augmented = append(augmented, Message{Role: "system", Content: statusText})
+	}
+	augmented = append(augmented, Message{
+		Role: "system",
+		Content: `返答は必ず以下のJSON形式のみで返してください。
+
+{
+  "reply": "返答テキスト",
+  "reply_type": "normal",
+  "delta": {
+    "affection": 増減値（整数）,
+    "trust": 増減値,
+    "fatigue": 増減値,
+    "mood": 増減値,
+    "stress": 増減値,
+    "energy": 増減値
+  }
+}`,
+	})
+
+	// systemとuserを分ける
+	var systemParts []map[string]interface{}
+	var contents []map[string]interface{}
+
+	for _, m := range augmented {
+		if m.Role == "system" {
+			systemParts = append(systemParts, map[string]interface{}{"text": m.Content})
+		} else {
+			role := m.Role
+			if role == "assistant" {
+				role = "model"
+			}
+			contents = append(contents, map[string]interface{}{
+				"role":  role,
+				"parts": []map[string]interface{}{{"text": m.Content}},
+			})
+		}
+	}
+
+	// 最後のuserメッセージに画像を追加
+	if len(contents) > 0 {
+		last := contents[len(contents)-1]
+		if last["role"] == "user" {
+			parts := last["parts"].([]map[string]interface{})
+			parts = append(parts, map[string]interface{}{
+				"inline_data": map[string]interface{}{
+					"mime_type": mimeType,
+					"data":      base64Image,
+				},
+			})
+			contents[len(contents)-1]["parts"] = parts
+		}
+	}
+
+	payload := map[string]interface{}{"contents": contents}
+	if len(systemParts) > 0 {
+		payload["system_instruction"] = map[string]interface{}{"parts": systemParts}
+	}
+
+	body, err := callGemini(ctx, url, payload)
+	if err != nil {
+		return nil, err
+	}
+
+	rawText, err := parseTextResponse(body)
+	if err != nil {
+		return nil, err
+	}
+
+	text := strings.TrimSpace(rawText)
+	start := strings.Index(text, "{")
+	end := strings.LastIndex(text, "}")
+	if start == -1 || end == -1 {
+		return &ChatResponse{Reply: text, ReplyType: "normal"}, nil
+	}
+
+	var result struct {
+		Reply     string      `json:"reply"`
+		ReplyType string      `json:"reply_type"`
+		Delta     StatusDelta `json:"delta"`
+	}
+	if err := json.Unmarshal([]byte(text[start:end+1]), &result); err != nil {
+		return &ChatResponse{Reply: text, ReplyType: "normal"}, nil
+	}
+	if result.ReplyType == "" {
+		result.ReplyType = "normal"
+	}
+	return &ChatResponse{Reply: result.Reply, ReplyType: result.ReplyType, Delta: result.Delta}, nil
 }

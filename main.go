@@ -18,6 +18,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
+	
 )
 
 // lastConvState は直前の会話状態を保持する（conversation切り替わり検知用）
@@ -84,14 +85,14 @@ func main() {
 		}
 
 		// ユーザーIDとキャラIDをリポジトリにセット
-		repo.UserID = m.Author.ID
+		repo.UserID      = m.Author.ID
 		repo.CharacterID = charaID
 
 		// 1. 設定取得
-		avgTStr := repo.GetSetting("avg_threshold", "0.38")
-		maxTStr := repo.GetSetting("max_threshold", "0.50")
-		topicTStr := repo.GetSetting("topic_threshold", "0.50")
-		rulePrompt := repo.GetSetting("system_prompt_rule", "日常会話に徹してください。")
+		avgTStr   := repo.GetSetting("avg_threshold",       "0.38")
+		maxTStr   := repo.GetSetting("max_threshold",       "0.50")
+		topicTStr := repo.GetSetting("topic_threshold",     "0.50")
+		rulePrompt := repo.GetSetting("system_prompt_rule",  "日常会話に徹してください。")
 		chara, err := repo.GetCharacter(repo.CharacterID)
 		var charaPrompt string
 		if err != nil || chara == nil {
@@ -99,15 +100,22 @@ func main() {
 		} else {
 			charaPrompt = chara.SystemPrompt
 		}
-		modelChat := repo.GetSetting("model_chat", "gemini-3-flash-preview")
+		modelChat  := repo.GetSetting("model_chat",  "gemini-3-flash-preview")
 		modelBatch := repo.GetSetting("model_batch", "gemini-3.1-flash-lite")
 
-		avgT, _ := strconv.ParseFloat(avgTStr, 64)
-		maxT, _ := strconv.ParseFloat(maxTStr, 64)
+		avgT,   _ := strconv.ParseFloat(avgTStr,   64)
+		maxT,   _ := strconv.ParseFloat(maxTStr,   64)
 		topicT, _ := strconv.ParseFloat(topicTStr, 64)
 
 		// 2. 会話ID取得
 		userInput := m.Content
+		// 画像添付があれば説明を付与
+		if len(m.Attachments) > 0 && isImageAttachment(m.Attachments[0].ContentType) {
+			desc, err := gemini.DescribeImage(context.Background(), modelBatch, m.Attachments[0].URL)
+			if err == nil && desc != "" {
+				userInput = userInput + fmt.Sprintf("（添付画像: %s）", desc)
+			}
+		}
 		userEmbedding := gemini.GetEmbedding(userInput)
 		convID, isNewConv, _ := repo.GetOrCreateConversationID(userEmbedding, avgT, maxT)
 
@@ -122,9 +130,9 @@ func main() {
 
 			// conversation切り替わり時 → 直前のconversationを要約
 			state.mu.Lock()
-			prevConvID := state.convID
+			prevConvID  := state.convID
 			prevTopicID := state.topicID
-			state.convID = convID
+			state.convID  = convID
 			state.topicID = topicID
 			state.mu.Unlock()
 
@@ -136,11 +144,12 @@ func main() {
 					if err != nil || len(memories) == 0 {
 						return
 					}
-					var lines []string
+					var lines []gemini.ExtractInfoMemory
 					for _, m := range memories {
-						if m.Role == "user" {
-							lines = append(lines, m.Content)
-						}
+						lines = append(lines, gemini.ExtractInfoMemory{
+							Role:    m.Role,
+							Content: m.Content,
+						})
 					}
 					result, err := gemini.ExtractUserInfo(context.Background(), mbatch, lines)
 					if err != nil || result == nil {
@@ -245,7 +254,7 @@ func main() {
 
 		// ① 現在時刻
 		messages = append(messages, gemini.Message{
-			Role: "system",
+			Role:    "system",
 			Content: func() string {
 				weekdays := []string{"日", "月", "火", "水", "木", "金", "土"}
 				now := time.Now()
@@ -339,8 +348,13 @@ func main() {
 			default:
 				timeLabel = mem.CreatedAt.Format("1/2")
 			}
+			// proactiveロールはassistantとしてGeminiに渡す
+			role := mem.Role
+			if role == "proactive" {
+				role = "assistant"
+			}
 			messages = append(messages, gemini.Message{
-				Role:    mem.Role,
+				Role:    role,
 				Content: fmt.Sprintf("(%s) %s", timeLabel, mem.Content),
 			})
 		}
@@ -361,8 +375,13 @@ func main() {
 			)
 		}
 
-		// 7. 生成
-		chatResp, err := gemini.GetChatResponseWithStatus(context.Background(), modelChat, messages, statusText)
+		// 7. 生成（画像添付があれば画像対応版を使う）
+		var chatResp *gemini.ChatResponse
+		if len(m.Attachments) > 0 && isImageAttachment(m.Attachments[0].ContentType) {
+			chatResp, err = gemini.GetChatResponseWithImage(context.Background(), modelChat, messages, m.Attachments[0].URL, statusText)
+		} else {
+			chatResp, err = gemini.GetChatResponseWithStatus(context.Background(), modelChat, messages, statusText)
+		}
 		if err != nil || chatResp == nil {
 			log.Printf("GetChatResponseWithStatus失敗: %v", err)
 			s.ChannelMessageSend(m.ChannelID, "（ちょっと調子悪いみたい……）")
@@ -435,21 +454,21 @@ func runNightlyBatchLoop(repo *repository.MemoryRepository) {
 
 // runEventLoop は1〜2時間ごとにパートナーの生活イベントを生成する
 func runEventLoop(repo *repository.MemoryRepository, chara repository.Character) {
+	r := repo.WithIDs("default", chara.ID)
 	for {
 		time.Sleep(90 * time.Minute)
 
-		repo.CharacterID = chara.ID
-		status, err := repo.GetPartnerStatus()
+		status, err := r.GetPartnerStatus()
 		if err != nil {
 			log.Printf("イベント生成: ステータス取得失敗: %v", err)
 			continue
 		}
 
-		modelBatch := repo.GetSetting("model_batch", "gemini-3.1-flash-lite")
+		modelBatch := r.GetSetting("model_batch", "gemini-3.1-flash-lite")
 		statusText := fmt.Sprintf("好感度:%d 信頼度:%d 疲労度:%d 気分:%d ストレス:%d 活力:%d",
 			status.Affection, status.Trust, status.Fatigue, status.Mood, status.Stress, status.Energy)
 
-		charaData, _ := repo.GetCharacter(chara.ID)
+		charaData, _ := r.GetCharacter(chara.ID)
 		var charaPrompt string
 		if charaData != nil {
 			charaPrompt = charaData.SystemPrompt
@@ -462,13 +481,13 @@ func runEventLoop(repo *repository.MemoryRepository, chara repository.Character)
 
 		// イベントをembeddingして保存
 		embedding := gemini.GetEmbedding(result.Event)
-		if err := repo.SaveEvent(result.Event, embedding); err != nil {
+		if err := r.SaveEvent(result.Event, embedding); err != nil {
 			log.Printf("イベント保存失敗: %v", err)
 			continue
 		}
 
 		// ステータスに反映
-		if err := repo.ApplyStatusDelta(repository.StatusDelta(result.Delta)); err != nil {
+		if err := r.ApplyStatusDelta(repository.StatusDelta(result.Delta)); err != nil {
 			log.Printf("イベントステータス更新失敗: %v", err)
 			continue
 		}
@@ -479,43 +498,71 @@ func runEventLoop(repo *repository.MemoryRepository, chara repository.Character)
 
 // runProactiveLoop は定期的に自発メッセージを送るか判断する
 func runProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, chara repository.Character) {
-	// 起動直後は少し待つ
-	time.Sleep(10 * time.Minute)
+	r := repo.WithIDs("default", chara.ID)
+	// 起動直後の待機時間（DBから取得）
+	startupMinutes, _ := strconv.Atoi(repo.GetSetting("proactive_startup_minutes", "10"))
+	time.Sleep(time.Duration(startupMinutes) * time.Minute)
 
 	for {
-		// 30分ごとにチェック
-		time.Sleep(30 * time.Minute)
+		// チェック間隔をDBから取得
+		checkMinutes, _ := strconv.Atoi(repo.GetSetting("proactive_check_minutes", "30"))
+		time.Sleep(time.Duration(checkMinutes) * time.Minute)
 
-		// 最後のメッセージ時刻を取得
-		lastTime, err := repo.GetLastMessageTime()
-		if err != nil {
+		// 最後のメッセージ時刻を取得（character_idだけで検索）
+		var lastTime time.Time
+		dbErr := r.DB().Get(&lastTime,
+			`SELECT created_at FROM memories WHERE character_id = $1 ORDER BY id DESC LIMIT 1`,
+			chara.ID)
+		if dbErr != nil {
+			log.Printf("自発メッセージ: 履歴なし、スキップ")
 			continue
 		}
 
 		elapsed := time.Since(lastTime)
+		log.Printf("自発メッセージ: 最終メッセージから%s経過", elapsed.Round(time.Minute))
 
-		// 1時間以上経過してなければスキップ
-		if elapsed < time.Hour {
+		// 最低経過時間をDBから取得
+		minElapsed, _ := strconv.Atoi(repo.GetSetting("proactive_min_elapsed", "60"))
+		if elapsed < time.Duration(minElapsed)*time.Minute {
+			continue
+		}
+
+		// 最後のメッセージのroleを確認
+		var lastRole string
+		r.DB().Get(&lastRole,
+			`SELECT role FROM memories WHERE character_id = $1 ORDER BY id DESC LIMIT 1`,
+			chara.ID)
+
+		// 30分以内にuserが話してたら会話中とみなしてスキップ
+		if lastRole == "user" && elapsed < 30*time.Minute {
+			log.Printf("自発メッセージ: 会話中のためスキップ")
+			continue
+		}
+
+		// 前回も自発メッセージだったら強制送信時間まで待つ
+		forceMinutesCheck, _ := strconv.Atoi(repo.GetSetting("proactive_force_minutes", "4320"))
+		if lastRole == "proactive" && elapsed < time.Duration(forceMinutesCheck)*time.Minute {
+			log.Printf("自発メッセージ: 前回も自発メッセージのためスキップ（経過:%s）", elapsed.Round(time.Minute))
 			continue
 		}
 
 		// 必要な情報を集める
-		status, err := repo.GetPartnerStatus()
+		status, err := r.GetPartnerStatus()
 		if err != nil {
 			continue
 		}
 		statusText := fmt.Sprintf("好感度:%d 信頼度:%d 疲労度:%d 気分:%d ストレス:%d 活力:%d",
 			status.Affection, status.Trust, status.Fatigue, status.Mood, status.Stress, status.Energy)
 
-		lastMsg, _ := repo.GetLastMemory()
+		lastMsg, _ := r.GetLastMemory()
 
-		recentEvents, _ := repo.GetRecentEvents(3)
+		recentEvents, _ := r.GetRecentEvents(3)
 		var eventTexts []string
 		for _, e := range recentEvents {
 			eventTexts = append(eventTexts, e.Event)
 		}
 
-		hotTopics, _ := repo.GetTopTopics(3)
+		hotTopics, _ := r.GetTopTopics(3)
 		var topicTexts []string
 		for _, t := range hotTopics {
 			topicTexts = append(topicTexts, fmt.Sprintf("%s（熱量:%.1f）", t.Summary, t.Heat))
@@ -542,7 +589,7 @@ func runProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 
 		// 時間帯チェック（デフォルト8時〜22時のみ送信）
 		hourStart, _ := strconv.Atoi(repo.GetSetting("proactive_hour_start", "8"))
-		hourEnd, _ := strconv.Atoi(repo.GetSetting("proactive_hour_end", "22"))
+		hourEnd,   _ := strconv.Atoi(repo.GetSetting("proactive_hour_end",   "22"))
 		currentHour := time.Now().Hour()
 		if currentHour < hourStart || currentHour >= hourEnd {
 			log.Printf("自発メッセージ: 時間帯外（%d時）スキップ", currentHour)
@@ -557,23 +604,49 @@ func runProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 			HotTopics:    topicTexts,
 			CharaPrompt:  charaPrompt,
 		})
-		if err != nil || result == nil || !result.Send {
-			log.Printf("自発メッセージ: 見送り")
+		forceMinutes, _ := strconv.Atoi(repo.GetSetting("proactive_force_minutes", "180"))
+		forceSend := elapsed >= time.Duration(forceMinutes)*time.Minute
+
+		if !forceSend && (err != nil || result == nil || !result.Send) {
+			log.Printf("自発メッセージ: 見送り（経過:%s）", elapsed.Round(time.Minute))
 			continue
+		}
+
+		// 強制送信の場合は同じペイロードで再生成（send判断を無視してメッセージだけ使う）
+		if forceSend && (err != nil || result == nil || !result.Send) {
+			log.Printf("自発メッセージ: 強制送信（経過:%s）", elapsed.Round(time.Minute))
+			forcePrompt := chara.SystemPrompt + "\n\n【重要】長時間連絡が取れていません。必ずsend: trueにして話しかけてください。"
+			forceResult, ferr := gemini.GenerateProactiveMessage(context.Background(), modelChat, gemini.ProactivePayload{
+				ElapsedTime:  elapsedText,
+				CurrentTime:  time.Now().Format("2006/01/02 15:04"),
+				Status:       statusText,
+				LastMessage:  "", // 強制送信は直近の会話不要
+				RecentEvents: eventTexts,
+				HotTopics:    topicTexts,
+				CharaPrompt:  forcePrompt,
+			})
+			if ferr != nil || forceResult == nil {
+				continue
+			}
+			result = forceResult
+			result.Send = true
 		}
 
 		dg.ChannelMessageSend(channelID, result.Message)
 		log.Printf("自発メッセージ送信: %s", result.Message)
 
-		// 自発メッセージを履歴に保存
-		repo.CharacterID = chara.ID
-		repo.UserID = "default"
-		embedding := gemini.GetEmbedding(result.Message)
-		// 最新のconversation_idを取得して保存
-		var convID string
-		repo.DB().Get(&convID, `SELECT id FROM conversations WHERE character_id = $1 ORDER BY updated_at DESC LIMIT 1`, chara.ID)
-		if convID != "" {
-			repo.SaveMemory(result.Message, embedding, "assistant", convID)
+		// 自発メッセージを履歴に保存（直近のuser_idで新しいconversationを作成）
+		var lastUserID string
+		r.DB().Get(&lastUserID, `SELECT user_id FROM conversations WHERE character_id = $1 ORDER BY updated_at DESC LIMIT 1`, chara.ID)
+		if lastUserID != "" {
+			r2 := repo.WithIDs(lastUserID, chara.ID)
+			embedding := gemini.GetEmbedding(result.Message)
+			var newConvID string
+			err := r2.DB().Get(&newConvID, `INSERT INTO conversations (user_id, character_id) VALUES ($1, $2) RETURNING id`, lastUserID, chara.ID)
+			if err == nil {
+				r2.SaveMemory(result.Message, embedding, "proactive", newConvID)
+				log.Printf("自発メッセージ履歴保存: conv=%s user=%s", newConvID, lastUserID)
+			}
 		}
 	}
 }
@@ -583,57 +656,59 @@ func runScheduleLoop(repo *repository.MemoryRepository, dg *discordgo.Session) {
 	for {
 		time.Sleep(1 * time.Hour)
 
-		// キャラごとのチャンネルに送信
 		activeChars, err := repo.GetActiveCharacters()
 		if err != nil || len(activeChars) == 0 {
 			continue
 		}
 
-		schedules, err := repo.GetTodaySchedules()
-		if err != nil || len(schedules) == 0 {
-			continue
-		}
-
 		modelChat := repo.GetSetting("model_chat", "gemini-3-flash-preview")
-		chara, _ := repo.GetCharacter(repo.CharacterID)
-		var charaPrompt string
-		if chara != nil {
-			charaPrompt = chara.SystemPrompt
-		}
-		status, _ := repo.GetPartnerStatus()
-		var statusText string
-		if status != nil {
-			statusText = fmt.Sprintf("好感度:%d 気分:%d", status.Affection, status.Mood)
-		}
 
-		for _, s := range schedules {
-			isToday := s.Date.Format("2006-01-02") == time.Now().Format("2006-01-02")
-			timing := "明日"
-			if isToday {
-				timing = "今日"
+		for _, ac := range activeChars {
+			if ac.ProactiveChannel == "" {
+				continue
+			}
+			r := repo.WithIDs("default", ac.ID)
+
+			schedules, err := r.GetTodaySchedules()
+			if err != nil || len(schedules) == 0 {
+				continue
 			}
 
-			messages := []gemini.Message{
-				{Role: "system", Content: charaPrompt},
-				{Role: "system", Content: fmt.Sprintf("現在のステータス: %s", statusText)},
-				{
-					Role: "user",
-					Content: fmt.Sprintf(
-						"%sは「%s」です。これに関して自然に一言話しかけてください。",
-						timing, s.Label,
-					),
-				},
+			status, _ := r.GetPartnerStatus()
+			var statusText string
+			if status != nil {
+				statusText = fmt.Sprintf("好感度:%d 気分:%d", status.Affection, status.Mood)
 			}
 
-			for _, ac := range activeChars {
-				if ac.ProactiveChannel == "" {
-					continue
+			for _, s := range schedules {
+				isToday := s.Date.Format("2006-01-02") == time.Now().Format("2006-01-02")
+				timing := "明日"
+				if isToday {
+					timing = "今日"
 				}
+
+				messages := []gemini.Message{
+					{Role: "system", Content: ac.SystemPrompt},
+					{Role: "system", Content: fmt.Sprintf("現在のステータス: %s", statusText)},
+					{
+						Role: "user",
+						Content: fmt.Sprintf(
+							"%sは「%s」です。これに関して自然に一言話しかけてください。",
+							timing, s.Label,
+						),
+					},
+				}
+
 				reply := gemini.GetChatResponse(modelChat, messages)
 				dg.ChannelMessageSend(ac.ProactiveChannel, reply)
+				r.MarkNotified(s.ID, s.Repeat)
+				log.Printf("スケジュール通知: %s（%s）", s.Label, timing)
 			}
-			repo.MarkNotified(s.ID, s.Repeat)
-			log.Printf("スケジュール通知: %s（%s）", s.Label, timing)
 		}
 	}
+}
+
+// isImageAttachment は添付ファイルが画像かどうか判定する
+func isImageAttachment(contentType string) bool {
+	return strings.HasPrefix(contentType, "image/")
 }

@@ -46,7 +46,7 @@ func RunMigrations(db *sqlx.DB) {
 				id              BIGSERIAL   PRIMARY KEY,
 				content         TEXT        NOT NULL,
 				embedding       vector(1536),
-				role            VARCHAR(16) NOT NULL CHECK (role IN ('user', 'assistant')),
+				role            VARCHAR(16) NOT NULL CHECK (role IN ('user', 'assistant', 'proactive')),
 				conversation_id UUID        NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
 				user_id         TEXT        NOT NULL DEFAULT 'default',
 				character_id    TEXT        NOT NULL DEFAULT 'default',
@@ -180,7 +180,11 @@ func RunMigrations(db *sqlx.DB) {
 				('debug_mode',          'true'),
 				('proactive_hour_start','8'),
 				('proactive_hour_end',  '22'),
-				('user_info_limit',     '5')
+				('user_info_limit',          '5'),
+				('proactive_check_minutes',  '30'),
+				('proactive_min_elapsed',    '60'),
+				('proactive_startup_minutes','10'),
+				('proactive_force_minutes',  '180')
 				ON CONFLICT (key) DO NOTHING`,
 		},
 		{
