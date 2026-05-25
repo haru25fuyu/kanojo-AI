@@ -18,7 +18,6 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
-	
 )
 
 // lastConvState は直前の会話状態を保持する（conversation切り替わり検知用）
@@ -85,14 +84,14 @@ func main() {
 		}
 
 		// ユーザーIDとキャラIDをリポジトリにセット
-		repo.UserID      = m.Author.ID
+		repo.UserID = m.Author.ID
 		repo.CharacterID = charaID
 
 		// 1. 設定取得
-		avgTStr   := repo.GetSetting("avg_threshold",       "0.38")
-		maxTStr   := repo.GetSetting("max_threshold",       "0.50")
-		topicTStr := repo.GetSetting("topic_threshold",     "0.50")
-		rulePrompt := repo.GetSetting("system_prompt_rule",  "日常会話に徹してください。")
+		avgTStr := repo.GetSetting("avg_threshold", "0.38")
+		maxTStr := repo.GetSetting("max_threshold", "0.50")
+		topicTStr := repo.GetSetting("topic_threshold", "0.50")
+		rulePrompt := repo.GetSetting("system_prompt_rule", "日常会話に徹してください。")
 		chara, err := repo.GetCharacter(repo.CharacterID)
 		var charaPrompt string
 		if err != nil || chara == nil {
@@ -100,11 +99,11 @@ func main() {
 		} else {
 			charaPrompt = chara.SystemPrompt
 		}
-		modelChat  := repo.GetSetting("model_chat",  "gemini-3-flash-preview")
+		modelChat := repo.GetSetting("model_chat", "gemini-3-flash-preview")
 		modelBatch := repo.GetSetting("model_batch", "gemini-3.1-flash-lite")
 
-		avgT,   _ := strconv.ParseFloat(avgTStr,   64)
-		maxT,   _ := strconv.ParseFloat(maxTStr,   64)
+		avgT, _ := strconv.ParseFloat(avgTStr, 64)
+		maxT, _ := strconv.ParseFloat(maxTStr, 64)
 		topicT, _ := strconv.ParseFloat(topicTStr, 64)
 
 		// 2. 会話ID取得
@@ -130,9 +129,9 @@ func main() {
 
 			// conversation切り替わり時 → 直前のconversationを要約
 			state.mu.Lock()
-			prevConvID  := state.convID
+			prevConvID := state.convID
 			prevTopicID := state.topicID
-			state.convID  = convID
+			state.convID = convID
 			state.topicID = topicID
 			state.mu.Unlock()
 
@@ -254,7 +253,7 @@ func main() {
 
 		// ① 現在時刻
 		messages = append(messages, gemini.Message{
-			Role:    "system",
+			Role: "system",
 			Content: func() string {
 				weekdays := []string{"日", "月", "火", "水", "木", "金", "土"}
 				now := time.Now()
@@ -274,13 +273,30 @@ func main() {
 			Content: charaPrompt,
 		})
 
-		// ② ユーザー情報をプロンプトに注入
+		// ② ユーザー情報をプロンプトに注入（2段階検索）
 		userInfoLimit, _ := strconv.Atoi(repo.GetSetting("user_info_limit", "5"))
+
+		// 1段目: 重要度×頻度で上位取得
 		topUserInfos, _ := repo.GetTopUserInfo(userInfoLimit)
-		if len(topUserInfos) > 0 {
+
+		// 2段目: 入力に意味的に近い情報を追加検索して重複除去でマージ
+		searchedInfos, _ := repo.SearchUserInfo(userEmbedding, userInfoLimit)
+
+		// keyでユニーク化（重要度順を優先）
+		userInfoMap := map[string]repository.UserInfo{}
+		for _, info := range topUserInfos {
+			userInfoMap[info.Key] = info
+		}
+		for _, info := range searchedInfos {
+			if _, exists := userInfoMap[info.Key]; !exists {
+				userInfoMap[info.Key] = info
+			}
+		}
+
+		if len(userInfoMap) > 0 {
 			var userInfoText strings.Builder
 			userInfoText.WriteString("【ユーザーについて知っていること】\n")
-			for _, info := range topUserInfos {
+			for _, info := range userInfoMap {
 				fmt.Fprintf(&userInfoText, "- %s: %s\n", info.Key, info.Value)
 			}
 			messages = append(messages, gemini.Message{
@@ -290,16 +306,35 @@ func main() {
 		}
 
 		// ② 2段階検索で記憶を取得してプロンプトに注入
-		// まずキーワード検索（軽量）、なければベクトル検索（詳細）
+		// 熱量順（常連話題）とembedding類似（今の会話に近い話題）をマージ
 		topTopics, _ := repo.GetTopTopics(3)
-		if len(topTopics) == 0 {
-			topTopics, _ = repo.SearchTopicsByEmbedding(userEmbedding, topicT)
+		searchedTopics, _ := repo.SearchTopicsByEmbedding(userEmbedding, topicT)
+
+		topicMap := map[string]repository.Topic{}
+		for _, t := range topTopics {
+			topicMap[t.ID] = t
 		}
-		if len(topTopics) > 0 {
+		for _, t := range searchedTopics {
+			if _, exists := topicMap[t.ID]; !exists {
+				topicMap[t.ID] = t
+			}
+		}
+
+		// トピックごとに熱量に応じたconvSummariesを補完
+		topicSlice := make([]repository.Topic, 0, len(topicMap))
+		for _, t := range topicMap {
+			topicSlice = append(topicSlice, t)
+		}
+		topicSlice = repo.FillConvSummaries(topicSlice)
+
+		if len(topicSlice) > 0 {
 			var memoryText strings.Builder
 			memoryText.WriteString("【あなたが覚えていること】\n")
-			for _, t := range topTopics {
+			for _, t := range topicSlice {
 				fmt.Fprintf(&memoryText, "- %s（熱量: %.1f）\n", t.Summary, t.Heat)
+				for _, cs := range t.ConvSummaries {
+					fmt.Fprintf(&memoryText, "  - %s\n", cs)
+				}
 			}
 			messages = append(messages, gemini.Message{
 				Role:    "system",
@@ -589,7 +624,7 @@ func runProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 
 		// 時間帯チェック（デフォルト8時〜22時のみ送信）
 		hourStart, _ := strconv.Atoi(repo.GetSetting("proactive_hour_start", "8"))
-		hourEnd,   _ := strconv.Atoi(repo.GetSetting("proactive_hour_end",   "22"))
+		hourEnd, _ := strconv.Atoi(repo.GetSetting("proactive_hour_end", "22"))
 		currentHour := time.Now().Hour()
 		if currentHour < hourStart || currentHour >= hourEnd {
 			log.Printf("自発メッセージ: 時間帯外（%d時）スキップ", currentHour)

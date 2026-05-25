@@ -9,10 +9,11 @@ import (
 )
 
 type Topic struct {
-	ID       string   `db:"id"`
-	Keywords []string `db:"keywords"`
-	Summary  string   `db:"summary"`
-	Heat     float64  `db:"heat"`
+	ID            string   `db:"id"`
+	Keywords      []string `db:"keywords"`
+	Summary       string   `db:"summary"`
+	Heat          float64  `db:"heat"`
+	ConvSummaries []string
 }
 
 // GetOrCreateTopic はembeddingで類似話題を探し、あれば(id, false)、なければ新規作成して(id, true)を返す
@@ -47,7 +48,7 @@ func (r *MemoryRepository) GetOrCreateTopic(embedding []float64, threshold float
 	return topicID, true, nil
 }
 
-// SearchTopicsByKeywords はキーワードでtopicsを検索する（2段階検索の1段目）
+// SearchTopicsByKeywords はキーワードでtopicsを検索する
 func (r *MemoryRepository) SearchTopicsByKeywords(keywords []string) ([]Topic, error) {
 	var topics []Topic
 	query := `
@@ -60,7 +61,7 @@ func (r *MemoryRepository) SearchTopicsByKeywords(keywords []string) ([]Topic, e
 	return topics, err
 }
 
-// SearchTopicsByEmbedding はembeddingで類似のconversation_topicsを検索する（2段階検索の2段目）
+// SearchTopicsByEmbedding はembeddingで類似のtopicsを検索する
 func (r *MemoryRepository) SearchTopicsByEmbedding(embedding []float64, threshold float64) ([]Topic, error) {
 	embeddingStr := toEmbeddingStr(embedding)
 	var topics []Topic
@@ -73,6 +74,41 @@ func (r *MemoryRepository) SearchTopicsByEmbedding(embedding []float64, threshol
 		LIMIT 3`
 	err := r.db.Select(&topics, query, embeddingStr, 1.0-threshold, r.CharacterID)
 	return topics, err
+}
+
+// GetConvSummariesByTopic はトピックに紐づくconversation_topicsのsummaryを熱量順に取得する
+func (r *MemoryRepository) GetConvSummariesByTopic(topicID string, limit int) ([]string, error) {
+	var summaries []string
+	err := r.db.Select(&summaries, `
+		SELECT summary FROM conversation_topics
+		WHERE topic_id = $1 AND summary != ''
+		ORDER BY date DESC
+		LIMIT $2`, topicID, limit)
+	return summaries, err
+}
+
+// convSummaryLimit は熱量に応じてconvSummariesの取得件数を返す
+func convSummaryLimit(heat float64) int {
+	switch {
+	case heat >= 10:
+		return 5
+	case heat >= 5:
+		return 3
+	default:
+		return 1
+	}
+}
+
+// FillConvSummaries はtopicsスライスにconvSummariesを補完する
+func (r *MemoryRepository) FillConvSummaries(topics []Topic) []Topic {
+	for i, t := range topics {
+		limit := convSummaryLimit(t.Heat)
+		summaries, err := r.GetConvSummariesByTopic(t.ID, limit)
+		if err == nil {
+			topics[i].ConvSummaries = summaries
+		}
+	}
+	return topics
 }
 
 // LinkConversationToTopic は会話と話題を中間テーブルで紐づける

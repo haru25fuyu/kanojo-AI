@@ -32,7 +32,7 @@ type StatusDelta struct {
 
 type ChatResponse struct {
 	Reply     string
-	ReplyType string // "normal", "short", "skip"
+	ReplyType string
 	Delta     StatusDelta
 }
 
@@ -44,6 +44,8 @@ type EventResponse struct {
 type ProactivePayload struct {
 	ElapsedTime  string
 	CurrentTime  string
+	TimeOfDay    string
+	ElapsedHours float64
 	Status       string
 	LastMessage  string
 	RecentEvents []string
@@ -56,7 +58,6 @@ type ProactiveResponse struct {
 	Message string `json:"message"`
 }
 
-// buildPayload はMessagesからGemini APIのペイロードを作る
 func buildPayload(messages []Message) map[string]interface{} {
 	var systemParts []map[string]interface{}
 	var contents []map[string]interface{}
@@ -83,7 +84,6 @@ func buildPayload(messages []Message) map[string]interface{} {
 	return payload
 }
 
-// parseTextResponse はGemini APIのレスポンスからテキストを取り出す
 func parseTextResponse(body []byte) (string, error) {
 	var resp struct {
 		Candidates []struct {
@@ -103,7 +103,6 @@ func parseTextResponse(body []byte) (string, error) {
 	return resp.Candidates[0].Content.Parts[0].Text, nil
 }
 
-// callGemini は低レイヤのHTTPリクエスト
 func callGemini(ctx context.Context, url string, payload interface{}) ([]byte, error) {
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
@@ -134,7 +133,6 @@ func callGemini(ctx context.Context, url string, payload interface{}) ([]byte, e
 	return body, nil
 }
 
-// GetChatResponse は簡易会話（Background context）
 func GetChatResponse(model string, messages []Message) string {
 	res, err := GetChatResponseWithContext(context.Background(), model, messages)
 	if err != nil {
@@ -144,7 +142,6 @@ func GetChatResponse(model string, messages []Message) string {
 	return res
 }
 
-// GetChatResponseWithContext はcontext付き会話
 func GetChatResponseWithContext(ctx context.Context, model string, messages []Message) (string, error) {
 	apiKey := os.Getenv("GEMINI_API_KEY")
 	url := fmt.Sprintf("%s/models/%s:generateContent?key=%s", baseURL, model, apiKey)
@@ -156,7 +153,6 @@ func GetChatResponseWithContext(ctx context.Context, model string, messages []Me
 	return parseTextResponse(body)
 }
 
-// GetEmbedding は文章をベクトルに変換する
 func GetEmbedding(text string) []float64 {
 	apiKey := os.Getenv("GEMINI_API_KEY")
 	url := fmt.Sprintf("%s/models/gemini-embedding-001:embedContent?key=%s", baseURL, apiKey)
@@ -187,11 +183,9 @@ func GetEmbedding(text string) []float64 {
 	return resp.Embedding.Values
 }
 
-// GetChatResponseWithStatus は返答と同時にステータス増減値をJSONで返す
 func GetChatResponseWithStatus(ctx context.Context, model string, messages []Message, status string) (*ChatResponse, error) {
 	augmented := append([]Message{}, messages...)
 
-	// ステータス情報を最初のsystemに追記
 	for i, m := range augmented {
 		if m.Role == "system" {
 			augmented[i].Content = m.Content + "\n\n" + status
@@ -199,7 +193,6 @@ func GetChatResponseWithStatus(ctx context.Context, model string, messages []Mes
 		}
 	}
 
-	// JSON形式指示を追加
 	augmented = append(augmented, Message{
 		Role: "system",
 		Content: `返答は必ず以下のJSON形式のみで返してください。
@@ -251,7 +244,6 @@ reply_typeの判断基準：
 	return &ChatResponse{Reply: result.Reply, ReplyType: result.ReplyType, Delta: result.Delta}, nil
 }
 
-// GenerateEvent はパートナーの生活イベントを生成する
 func GenerateEvent(ctx context.Context, model string, status string, hour int, charaPrompt string) (*EventResponse, error) {
 	timeOfDay := "昼"
 	switch {
@@ -310,13 +302,12 @@ func GenerateEvent(ctx context.Context, model string, status string, hour int, c
 	return &result, nil
 }
 
-// GenerateProactiveMessage は自発的にメッセージを送るか判断して生成する（Google Search grounding付き）
 func GenerateProactiveMessage(ctx context.Context, model string, payload ProactivePayload) (*ProactiveResponse, error) {
 	apiKey := os.Getenv("GEMINI_API_KEY")
 	url := fmt.Sprintf("%s/models/%s:generateContent?key=%s", baseURL, model, apiKey)
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "現在時刻: %s\n", payload.CurrentTime)
+	fmt.Fprintf(&sb, "現在時刻: %s（%s）\n", payload.CurrentTime, payload.TimeOfDay)
 	fmt.Fprintf(&sb, "経過時間: %s\n", payload.ElapsedTime)
 	fmt.Fprintf(&sb, "現在のステータス: %s\n", payload.Status)
 	if payload.LastMessage != "" {
@@ -335,12 +326,39 @@ func GenerateProactiveMessage(ctx context.Context, model string, payload Proacti
 		}
 	}
 
-	messages := []Message{
-		{
-			Role: "system",
-			Content: payload.CharaPrompt + `
+	// 経過時間による閾値説明を動的に生成
+	var thresholdHint string
+	switch {
+	case payload.ElapsedHours < 2:
+		thresholdHint = "経過時間が短い（2時間未満）ため、よほど強い話題ネタがない限りsend: falseにすること。"
+	case payload.ElapsedHours < 6:
+		thresholdHint = "経過時間は2〜6時間。時間帯に自然な話題があればsend: true。"
+	default:
+		thresholdHint = "経過時間が6時間以上。積極的にsend: trueで問題ない。"
+	}
 
-あなたから自発的にメッセージを送るか判断してください。
+	systemPrompt := payload.CharaPrompt + `
+
+【現在の時間帯】` + payload.TimeOfDay + `（` + payload.CurrentTime + `）
+
+【時間帯別の話題指針】
+- 朝（6〜10時）: 今日の予定、朝ごはん、天気、おはようの挨拶
+- 昼（10〜14時）: 仕事・学校の話、ランチ、今日の調子
+- 夕方（14〜18時）: 今日あったこと、帰り道、夕飯の話
+- 夜（18〜22時）: 晩ごはん、今日の振り返り、趣味、ゆっくりした話
+- 深夜（22時〜）: 眠れない話、しんみりした話題、おやすみ前の一言
+
+【時間帯の制約】
+- 現在は「` + payload.TimeOfDay + `」です。この時間帯に合わない話題は絶対に送らない
+- 朝に「お疲れ様」「今日も疲れたね」などは絶対NG
+- 深夜に「今日の予定は？」などは絶対NG
+
+【send判断】
+` + thresholdHint + `
+- 最後の会話が未完了・盛り上がっていた・続きがありそうな場合はsend: false
+- 「おやすみ」「また明日」など会話を締めた直後もsend: false
+- 「なんとなく話しかけたい」程度ではsend: false、明確な話題があるときだけsend: true
+
 以下のJSONのみを返してください。
 
 {
@@ -348,17 +366,16 @@ func GenerateProactiveMessage(ctx context.Context, model string, payload Proacti
   "message": "送る場合のメッセージ（送らない場合は空文字）"
 }
 
-【重要なルール】
+【メッセージのルール】
 - ユーザーと過去に話したことのある話題か、自分の実際のイベントをベースにする
 - 架空の体験談・嘘のエピソードは絶対に作らない
 - 「一緒に〜しない？」などユーザーを誘う内容は禁止
 - 1回のメッセージは3文以内、80文字程度
 - web検索で最新情報があれば、過去の話題に関連する場合のみ使う
-- web検索の結果は話題のきっかけとして使うだけで、自分の体験として語らない
-- 例：「〇〇のイベントあるみたいだけど知ってる？」はOK、「〇〇に行ってきたよ！」はNG
-- 最後の会話が未完了・盛り上がっていた・続きがありそうな場合はsend: falseにする
-- 「おやすみ」「また明日」など会話を締めた直後もsend: falseにする`,
-		},
+- web検索の結果は話題のきっかけとして使うだけで、自分の体験として語らない`
+
+	messages := []Message{
+		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: sb.String()},
 	}
 
@@ -391,26 +408,22 @@ func GenerateProactiveMessage(ctx context.Context, model string, payload Proacti
 	return &result, nil
 }
 
-// UserInfoItem はLLMが抽出したユーザー情報の1件
 type UserInfoItem struct {
 	Key        string  `json:"key"`
 	Value      string  `json:"value"`
 	Importance float64 `json:"importance"`
 }
 
-// ExtractInfoResult はユーザー情報とキャラ情報の両方を含む
 type ExtractInfoResult struct {
 	UserInfo  []UserInfoItem `json:"user_info"`
 	CharaInfo []UserInfoItem `json:"chara_info"`
 }
 
-// ExtractInfoMemory は抽出用のメモリ構造体
 type ExtractInfoMemory struct {
 	Role    string
 	Content string
 }
 
-// ExtractUserInfo は会話からユーザー情報とキャラ情報を同時に抽出する
 func ExtractUserInfo(ctx context.Context, model string, memories []ExtractInfoMemory) (*ExtractInfoResult, error) {
 	var sb strings.Builder
 	for _, m := range memories {
@@ -477,14 +490,12 @@ func ExtractUserInfo(ctx context.Context, model string, memories []ExtractInfoMe
 	return &result, nil
 }
 
-// ScheduleItem はLLMが抽出したスケジュール・記念日
 type ScheduleItem struct {
 	Label  string `json:"label"`
-	Date   string `json:"date"` // "YYYY-MM-DD" or "MM-DD"（repeatの場合）
+	Date   string `json:"date"`
 	Repeat bool   `json:"repeat"`
 }
 
-// ExtractSchedules は会話からスケジュール・記念日を抽出する
 func ExtractSchedules(ctx context.Context, model string, memories []string) ([]ScheduleItem, error) {
 	var sb strings.Builder
 	for _, m := range memories {
@@ -542,7 +553,6 @@ func min(a, b int) int {
 	return b
 }
 
-// DescribeImage は画像の内容を一言で説明する
 func DescribeImage(ctx context.Context, model string, imageURL string) (string, error) {
 	apiKey := os.Getenv("GEMINI_API_KEY")
 	url := fmt.Sprintf("%s/models/%s:generateContent?key=%s", baseURL, model, apiKey)
@@ -589,12 +599,10 @@ func DescribeImage(ctx context.Context, model string, imageURL string) (string, 
 	return parseTextResponse(body)
 }
 
-// GetChatResponseWithImage は画像付きでChatResponseを生成する
 func GetChatResponseWithImage(ctx context.Context, model string, messages []Message, imageURL string, statusText string) (*ChatResponse, error) {
 	apiKey := os.Getenv("GEMINI_API_KEY")
 	url := fmt.Sprintf("%s/models/%s:generateContent?key=%s", baseURL, model, apiKey)
 
-	// 画像をダウンロードしてbase64に変換
 	resp, err := http.Get(imageURL)
 	if err != nil {
 		return nil, fmt.Errorf("画像ダウンロード失敗: %w", err)
@@ -613,7 +621,6 @@ func GetChatResponseWithImage(ctx context.Context, model string, messages []Mess
 
 	base64Image := base64.StdEncoding.EncodeToString(imageData)
 
-	// statusとJSONフォーマット指示を追加
 	augmented := append([]Message{}, messages...)
 	if statusText != "" {
 		augmented = append(augmented, Message{Role: "system", Content: statusText})
@@ -636,7 +643,6 @@ func GetChatResponseWithImage(ctx context.Context, model string, messages []Mess
 }`,
 	})
 
-	// systemとuserを分ける
 	var systemParts []map[string]interface{}
 	var contents []map[string]interface{}
 
@@ -655,7 +661,6 @@ func GetChatResponseWithImage(ctx context.Context, model string, messages []Mess
 		}
 	}
 
-	// 最後のuserメッセージに画像を追加
 	if len(contents) > 0 {
 		last := contents[len(contents)-1]
 		if last["role"] == "user" {

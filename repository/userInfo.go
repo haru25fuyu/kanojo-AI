@@ -56,9 +56,10 @@ func (r *MemoryRepository) SearchUserInfo(embedding []float64, limit int) ([]Use
 		SELECT key, value, importance, mention_count, updated_at
 		FROM user_info
 		WHERE embedding IS NOT NULL
+		  AND user_id = $3 AND character_id = $4
 		ORDER BY (embedding <=> $1::vector) ASC
 		LIMIT $2`
-	err := r.db.Select(&infos, query, embeddingStr, limit)
+	err := r.db.Select(&infos, query, embeddingStr, limit, r.UserID, r.CharacterID)
 	return infos, err
 }
 
