@@ -16,10 +16,8 @@ type TopicAssessment struct {
 	Summary   string   `json:"summary"`
 }
 
-// RunNightlyBatch は深夜バッチのエントリポイント
 // MergeTopics は類似したtopicを統合する
 func (r *MemoryRepository) MergeTopics(threshold float64) error {
-	// embeddingが存在するtopicを全件取得
 	var topics []struct {
 		ID      string  `db:"id"`
 		Summary string  `db:"summary"`
@@ -46,7 +44,6 @@ func (r *MemoryRepository) MergeTopics(threshold float64) error {
 				continue
 			}
 
-			// 2つのtopic間の類似度を計算
 			var sim float64
 			err := r.db.Get(&sim, `
 				SELECT 1 - (a.embedding <=> b.embedding)
@@ -58,18 +55,14 @@ func (r *MemoryRepository) MergeTopics(threshold float64) error {
 				continue
 			}
 
-			// topics[j]をtopics[i]に統合
-			// conversation_topicsの紐づけを更新
 			r.db.Exec(`
 				UPDATE conversation_topics SET topic_id = $1
 				WHERE topic_id = $2`, topics[i].ID, topics[j].ID)
 
-			// 熱量を合算
 			r.db.Exec(`
 				UPDATE topics SET heat = heat + $1 WHERE id = $2`,
 				topics[j].Heat, topics[i].ID)
 
-			// 古いtopicを削除
 			r.db.Exec(`DELETE FROM topics WHERE id = $1`, topics[j].ID)
 
 			merged[topics[j].ID] = true
@@ -118,7 +111,6 @@ func (r *MemoryRepository) RunNightlyBatch(modelBatch string) {
 			topic.ID, newHeat, assessment.Keywords, assessment.Summary)
 	}
 
-	// topic merge（類似話題を統合）
 	mergeThreshold := 0.85
 	if err := r.MergeTopics(mergeThreshold); err != nil {
 		log.Printf("topic merge失敗: %v", err)
@@ -141,13 +133,13 @@ func AssessTopic(ctx context.Context, model string, memories []Memory) (*TopicAs
 			Role: "system",
 			Content: `あなたは会話の分析AIです。
 与えられた会話履歴を分析し、以下のJSONのみを返してください。他の文字は一切出力しないでください。
- 
+
 【要約のルール】
 - 「アシスタント」「AI」という表現は使わない
 - キャラクターを「彼女」「相手」などと表現する
 - ユーザー視点の自然な会話の要約にする
 - summaryは会話量に応じて1〜5文で書く。何を話したか・どんな雰囲気だったか・感情的なニュアンス・印象的なエピソード・話題の結末や続きがあるかを含める
- 
+
 {
   "keywords": ["キーワード1", "キーワード2", "キーワード3"],
   "heat_score": 0.0から1.0の数値（会話の感情的な濃さ・重要度。雑談=0.1、感情的な話題=0.8〜1.0）,
@@ -183,7 +175,8 @@ func AssessTopic(ctx context.Context, model string, memories []Memory) (*TopicAs
 
 // SummarizeConversation は終了したconversationを要約してconversation_topicsに保存する
 func (r *MemoryRepository) SummarizeConversation(modelBatch string, convID string, topicID string) error {
-	memories, err := r.GetRecentMemories(convID, 100)
+	// 修正: GetRecentMemories → GetAllMemoriesInConversation
+	memories, err := r.GetAllMemoriesInConversation(convID)
 	if err != nil || len(memories) == 0 {
 		return err
 	}

@@ -19,7 +19,6 @@ func NewMemoryRepository(db *sqlx.DB) *MemoryRepository {
 	return &MemoryRepository{db: db, UserID: "default", CharacterID: "default"}
 }
 
-// WithIDs はUserIDとCharacterIDを指定した新しいリポジトリを返す（goroutine用）
 func (r *MemoryRepository) WithIDs(userID, characterID string) *MemoryRepository {
 	return &MemoryRepository{
 		db:          r.db,
@@ -35,7 +34,6 @@ type Memory struct {
 	ConversationID string    `db:"conversation_id"`
 }
 
-// DB はDBインスタンスを返す
 func (r *MemoryRepository) DB() *sqlx.DB {
 	return r.db
 }
@@ -71,7 +69,6 @@ func (r *MemoryRepository) SaveMemory(content string, embedding []float64, role 
 
 func (r *MemoryRepository) GetRecentMemories(convID string, limit int) ([]Memory, error) {
 	var memories []Memory
-	// conversation_idをまたいで直近N件取得
 	query := `
 		SELECT role, content, created_at, conversation_id FROM (
 			SELECT role, content, created_at, id, conversation_id
@@ -85,11 +82,10 @@ func (r *MemoryRepository) GetRecentMemories(convID string, limit int) ([]Memory
 	return memories, err
 }
 
-// GetAllMemoriesInConversation は指定conversationの全件を取得する
 func (r *MemoryRepository) GetAllMemoriesInConversation(convID string) ([]Memory, error) {
 	var memories []Memory
 	query := `
-		SELECT role, content, created_at
+		SELECT role, content, created_at, conversation_id
 		FROM memories
 		WHERE conversation_id = $1
 		ORDER BY id ASC`
@@ -118,8 +114,6 @@ func (r *MemoryRepository) GetLastMemory() (string, error) {
 	return content, err
 }
 
-// GetCharacterIDByChannel はチャンネルIDからcharacter_idを返す
-// charactersテーブルのproactive_channelと照合する
 func (r *MemoryRepository) GetCharacterIDByChannel(channelID string) string {
 	var id string
 	err := r.db.Get(&id,
@@ -127,7 +121,31 @@ func (r *MemoryRepository) GetCharacterIDByChannel(channelID string) string {
 		channelID,
 	)
 	if err != nil {
-		return "group" // マッピングなし→将来のグループチャット扱い（反応しない）
+		return "group"
 	}
 	return id
+}
+
+// GetTodayProactiveCount は今日送った自発メッセージの件数を返す
+func (r *MemoryRepository) GetTodayProactiveCount() int {
+	var count int
+	r.db.Get(&count, `
+		SELECT COUNT(*) FROM memories
+		WHERE character_id = $1
+		  AND role = 'proactive'
+		  AND created_at >= CURRENT_DATE`,
+		r.CharacterID)
+	return count
+}
+
+// GetTodayConvCount は今日のconversation数を返す
+func (r *MemoryRepository) GetTodayConvCount() int {
+	var count int
+	r.db.Get(&count, `
+		SELECT COUNT(DISTINCT conversation_id) FROM memories
+		WHERE character_id = $1
+		  AND user_id = $2
+		  AND created_at >= CURRENT_DATE`,
+		r.CharacterID, r.UserID)
+	return count
 }

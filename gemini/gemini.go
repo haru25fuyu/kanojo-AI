@@ -42,15 +42,17 @@ type EventResponse struct {
 }
 
 type ProactivePayload struct {
-	ElapsedTime  string
-	CurrentTime  string
-	TimeOfDay    string
-	ElapsedHours float64
-	Status       string
-	LastMessage  string
-	RecentEvents []string
-	HotTopics    []string
-	CharaPrompt  string
+	TodayProactiveCount int
+	TodayConvCount      int
+	ElapsedTime         string
+	CurrentTime         string
+	TimeOfDay           string
+	ElapsedHours        float64
+	Status              string
+	LastMessage         string
+	RecentEvents        []string
+	HotTopics           []string
+	CharaPrompt         string
 }
 
 type ProactiveResponse struct {
@@ -310,6 +312,8 @@ func GenerateProactiveMessage(ctx context.Context, model string, payload Proacti
 	fmt.Fprintf(&sb, "現在時刻: %s（%s）\n", payload.CurrentTime, payload.TimeOfDay)
 	fmt.Fprintf(&sb, "経過時間: %s\n", payload.ElapsedTime)
 	fmt.Fprintf(&sb, "現在のステータス: %s\n", payload.Status)
+	fmt.Fprintf(&sb, "今日の自発メッセージ送信回数: %d回\n", payload.TodayProactiveCount)
+	fmt.Fprintf(&sb, "今日の会話数: %d回\n", payload.TodayConvCount)
 	if payload.LastMessage != "" {
 		fmt.Fprintf(&sb, "最後の会話: %s\n", payload.LastMessage)
 	}
@@ -320,21 +324,10 @@ func GenerateProactiveMessage(ctx context.Context, model string, payload Proacti
 		}
 	}
 	if len(payload.HotTopics) > 0 {
-		sb.WriteString("よく話してる話題:\n")
+		sb.WriteString("過去に話していた話題:\n")
 		for _, t := range payload.HotTopics {
 			fmt.Fprintf(&sb, "  - %s\n", t)
 		}
-	}
-
-	// 経過時間による閾値説明を動的に生成
-	var thresholdHint string
-	switch {
-	case payload.ElapsedHours < 2:
-		thresholdHint = "経過時間が短い（2時間未満）ため、よほど強い話題ネタがない限りsend: falseにすること。"
-	case payload.ElapsedHours < 6:
-		thresholdHint = "経過時間は2〜6時間。時間帯に自然な話題があればsend: true。"
-	default:
-		thresholdHint = "経過時間が6時間以上。積極的にsend: trueで問題ない。"
 	}
 
 	systemPrompt := payload.CharaPrompt + `
@@ -350,29 +343,35 @@ func GenerateProactiveMessage(ctx context.Context, model string, payload Proacti
 
 【時間帯の制約】
 - 現在は「` + payload.TimeOfDay + `」です。この時間帯に合わない話題は絶対に送らない
-- 朝に「お疲れ様」「今日も疲れたね」などは絶対NG
+- 朝に「お疲れ様」「今日も疲れたね」「お互い頑張りましょう」などは絶対NG
 - 深夜に「今日の予定は？」などは絶対NG
 
 【send判断】
-` + thresholdHint + `
+以下の情報をもとに、このキャラクターとして自発メッセージを送るべきか判断してください。
+- 経過時間・今日の自発送信回数・今日の会話数・現在のステータスを総合的に考慮する
+- キャラクターの性格として「今送る動機があるか」を自分に問いかける
+- 今日すでに自発メッセージを送っていれば、よほどのことがない限りsend: false
+- 今日たくさん会話していれば、もう十分としてsend: false
+- 疲労が高い・気分が悪い・ストレスが高い場合はsend: false
 - 最後の会話が未完了・盛り上がっていた・続きがありそうな場合はsend: false
 - 「おやすみ」「また明日」など会話を締めた直後もsend: false
-- 「なんとなく話しかけたい」程度ではsend: false、明確な話題があるときだけsend: true
+- 「なんとなく話しかけたい」程度ではsend: false、明確な話題や理由があるときだけsend: true
+
+【メッセージの作り方】
+- 過去に話していた話題をベースに、その続きや近況をユーザーに質問する形にする
+- 例：「そういえば〇〇ってどうなった？」「この前〇〇って言ってたけど、最近は？」
+- 自分の実際のイベント（最近あったこと）をきっかけにしてもよい
+- 架空のエピソードや「〜した時みたいに」などの作り話は絶対禁止
+- 「一緒に〜しない？」などユーザーを誘う内容は禁止
+- キャラクター設定の口調・言葉遣い・世界観を必ず守ること
+- 1回のメッセージは2文以内、60文字程度
 
 以下のJSONのみを返してください。
 
 {
   "send": true または false,
   "message": "送る場合のメッセージ（送らない場合は空文字）"
-}
-
-【メッセージのルール】
-- ユーザーと過去に話したことのある話題か、自分の実際のイベントをベースにする
-- 架空の体験談・嘘のエピソードは絶対に作らない
-- 「一緒に〜しない？」などユーザーを誘う内容は禁止
-- 1回のメッセージは3文以内、80文字程度
-- web検索で最新情報があれば、過去の話題に関連する場合のみ使う
-- web検索の結果は話題のきっかけとして使うだけで、自分の体験として語らない`
+}`
 
 	messages := []Message{
 		{Role: "system", Content: systemPrompt},
