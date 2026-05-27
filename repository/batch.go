@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"go_app/gemini"
 	"log"
+	"math"
 	"strings"
+	"time"
 )
 
 type TopicAssessment struct {
@@ -74,6 +76,14 @@ func (r *MemoryRepository) MergeTopics(threshold float64) error {
 
 func (r *MemoryRepository) RunNightlyBatch(modelBatch string) {
 	log.Println("深夜バッチ開始")
+
+	// 睡眠回復処理
+	recoveryMode := r.GetSetting("sleep_recovery_mode", "static")
+	if recoveryMode == "dynamic" {
+		r.applySleepRecoveryDynamic()
+	} else {
+		r.applySleepRecoveryStatic()
+	}
 
 	if err := r.DecayAllHeat(); err != nil {
 		log.Printf("熱量減衰失敗: %v", err)
@@ -192,4 +202,80 @@ func (r *MemoryRepository) SummarizeConversation(modelBatch string, convID strin
 		WHERE conversation_id = $2 AND topic_id = $3`
 	_, err = r.db.Exec(query, assessment.Summary, convID, topicID)
 	return err
+}
+
+// applySleepRecoveryStatic は固定値で睡眠回復を適用する
+func (r *MemoryRepository) applySleepRecoveryStatic() {
+	energy := r.getSettingInt("sleep_recovery_static_energy", 5000)
+	fatigue := r.getSettingInt("sleep_recovery_static_fatigue", 5000)
+	stress := r.getSettingInt("sleep_recovery_static_stress", 2000)
+
+	r.db.Exec(`
+		UPDATE partner_status SET
+			energy  = LEAST(10000,  energy  + $1),
+			fatigue = GREATEST(0,   fatigue - $2),
+			stress  = GREATEST(0,   stress  - $3),
+			mood    = LEAST(10000,  mood    + 500)
+		WHERE character_id = $4`,
+		energy, fatigue, stress, r.CharacterID)
+	log.Printf("睡眠回復（固定）: energy+%d fatigue-%d stress-%d", energy, fatigue, stress)
+}
+
+// applySleepRecoveryDynamic は無会話時間を睡眠時間とみなして動的に回復する
+func (r *MemoryRepository) applySleepRecoveryDynamic() {
+	var lastMsgTime time.Time
+	err := r.db.Get(&lastMsgTime, `
+		SELECT created_at FROM memories
+		WHERE character_id = $1
+		ORDER BY id DESC LIMIT 1`, r.CharacterID)
+	if err != nil {
+		// 履歴なしの場合は固定回復にフォールバック
+		r.applySleepRecoveryStatic()
+		return
+	}
+
+	// 22時より前に会話が終わってたら22時から睡眠開始とみなす
+	sleepStart := lastMsgTime
+	if sleepStart.Hour() < 22 {
+		sleepStart = time.Date(
+			sleepStart.Year(), sleepStart.Month(), sleepStart.Day(),
+			22, 0, 0, 0, sleepStart.Location(),
+		)
+	}
+
+	// 睡眠時間を計算（最大8時間）
+	sleepHours := time.Since(sleepStart).Hours()
+	sleepHours = math.Min(math.Max(sleepHours, 0), 8)
+
+	// 8時間睡眠を100%として回復量を計算
+	ratio := sleepHours / 8.0
+	energy := int(ratio * 6000)
+	fatigue := int(ratio * 6000)
+	stress := int(ratio * 2000)
+	mood := int(ratio * 1000)
+
+	r.db.Exec(`
+		UPDATE partner_status SET
+			energy  = LEAST(10000,  energy  + $1),
+			fatigue = GREATEST(0,   fatigue - $2),
+			stress  = GREATEST(0,   stress  - $3),
+			mood    = LEAST(10000,  mood    + $4)
+		WHERE character_id = $5`,
+		energy, fatigue, stress, mood, r.CharacterID)
+	log.Printf("睡眠回復（動的）: 睡眠%.1f時間 energy+%d fatigue-%d stress-%d mood+%d",
+		sleepHours, energy, fatigue, stress, mood)
+}
+
+// getSettingInt はsettingsからint値を取得するヘルパー
+func (r *MemoryRepository) getSettingInt(key string, defaultValue int) int {
+	var value string
+	err := r.db.Get(&value, `SELECT value FROM settings WHERE key = $1`, key)
+	if err != nil {
+		return defaultValue
+	}
+	var i int
+	if _, err := fmt.Sscanf(value, "%d", &i); err != nil {
+		return defaultValue
+	}
+	return i
 }

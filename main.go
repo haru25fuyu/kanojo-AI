@@ -6,6 +6,7 @@ import (
 	"go_app/gemini"
 	"go_app/repository"
 	"log"
+	"math/rand"
 	"os"
 	"os/signal"
 	"strconv"
@@ -82,9 +83,9 @@ func main() {
 		repo.CharacterID = charaID
 
 		// 1. 設定取得
-		avgTStr := repo.GetSetting("avg_threshold", "0.38")
-		maxTStr := repo.GetSetting("max_threshold", "0.50")
-		topicTStr := repo.GetSetting("topic_threshold", "0.50")
+		avgTStr    := repo.GetSetting("avg_threshold",      "0.38")
+		maxTStr    := repo.GetSetting("max_threshold",      "0.50")
+		topicTStr  := repo.GetSetting("topic_threshold",    "0.50")
 		rulePrompt := repo.GetSetting("system_prompt_rule", "日常会話に徹してください。")
 		chara, err := repo.GetCharacter(repo.CharacterID)
 		var charaPrompt string
@@ -93,11 +94,11 @@ func main() {
 		} else {
 			charaPrompt = chara.SystemPrompt
 		}
-		modelChat := repo.GetSetting("model_chat", "gemini-3-flash-preview")
+		modelChat  := repo.GetSetting("model_chat",  "gemini-3-flash-preview")
 		modelBatch := repo.GetSetting("model_batch", "gemini-3.1-flash-lite")
 
-		avgT, _ := strconv.ParseFloat(avgTStr, 64)
-		maxT, _ := strconv.ParseFloat(maxTStr, 64)
+		avgT,   _ := strconv.ParseFloat(avgTStr,   64)
+		maxT,   _ := strconv.ParseFloat(maxTStr,   64)
 		topicT, _ := strconv.ParseFloat(topicTStr, 64)
 
 		// 2. 会話ID取得
@@ -121,9 +122,9 @@ func main() {
 			repo.UpdateTopicEmbedding(topicID, userEmbedding)
 
 			state.mu.Lock()
-			prevConvID := state.convID
+			prevConvID  := state.convID
 			prevTopicID := state.topicID
-			state.convID = convID
+			state.convID  = convID
 			state.topicID = topicID
 			state.mu.Unlock()
 
@@ -150,6 +151,30 @@ func main() {
 						emb := gemini.GetEmbedding(item.Key + ": " + item.Value)
 						if err := r.UpsertUserInfo(item.Key, item.Value, item.Importance, emb); err != nil {
 							log.Printf("ユーザー情報保存失敗: %v", err)
+						}
+					}
+
+					// コアフィールドをuser_profileに反映
+					var name, gender, job string
+					var age *int
+					for _, item := range result.UserInfo {
+						switch item.Key {
+						case "name":
+							name = item.Value
+						case "age":
+							var a int
+							if _, err := fmt.Sscanf(item.Value, "%d", &a); err == nil {
+								age = &a
+							}
+						case "gender":
+							gender = item.Value
+						case "job":
+							job = item.Value
+						}
+					}
+					if name != "" || age != nil || gender != "" || job != "" {
+						if err := r.UpsertUserProfile(name, age, gender, job); err != nil {
+							log.Printf("ユーザープロフィール保存失敗: %v", err)
 						}
 					}
 					for _, item := range result.CharaInfo {
@@ -266,7 +291,7 @@ func main() {
 
 		// ④ ユーザー情報をプロンプトに注入（2段階検索）
 		userInfoLimit, _ := strconv.Atoi(repo.GetSetting("user_info_limit", "5"))
-		topUserInfos, _ := repo.GetTopUserInfo(userInfoLimit)
+		topUserInfos, _  := repo.GetTopUserInfo(userInfoLimit)
 		searchedInfos, _ := repo.SearchUserInfo(userEmbedding, userInfoLimit)
 
 		userInfoMap := map[string]repository.UserInfo{}
@@ -291,7 +316,7 @@ func main() {
 		}
 
 		// ⑤ 話題の記憶（熱量順＋embedding類似のマージ）
-		topTopics, _ := repo.GetTopTopics(3)
+		topTopics,      _ := repo.GetTopTopics(3)
 		searchedTopics, _ := repo.SearchTopicsByEmbedding(userEmbedding, topicT)
 
 		topicMap := map[string]repository.Topic{}
@@ -325,7 +350,7 @@ func main() {
 		}
 
 		// ⑥ パートナーのイベント（直近3件＋関連検索）
-		recentEvents, _ := repo.GetRecentEvents(3)
+		recentEvents,  _ := repo.GetRecentEvents(3)
 		relatedEvents, _ := repo.SearchEvents(userEmbedding, 3)
 
 		eventMap := map[int64]repository.PartnerEvent{}
@@ -502,6 +527,19 @@ func runEventLoop(repo *repository.MemoryRepository, chara repository.Character)
 			continue
 		}
 
+		// 一定確率で乱数デルタを適用（好感度・信頼度は除外）
+		if rand.Float64() < 0.3 {
+			randomDelta := repository.StatusDelta{
+				Fatigue: rand.Intn(2000) - 1000,
+				Mood:    rand.Intn(2000) - 1000,
+				Stress:  rand.Intn(1000) - 500,
+				Energy:  rand.Intn(1000) - 500,
+			}
+			if err := r.ApplyStatusDelta(randomDelta); err != nil {
+				log.Printf("乱数デルタ適用失敗: %v", err)
+			}
+		}
+
 		log.Printf("イベント発生: %s", result.Event)
 	}
 }
@@ -607,14 +645,14 @@ func runProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 
 		// 時間帯チェック
 		hourStart, _ := strconv.Atoi(repo.GetSetting("proactive_hour_start", "8"))
-		hourEnd, _ := strconv.Atoi(repo.GetSetting("proactive_hour_end", "22"))
+		hourEnd,   _ := strconv.Atoi(repo.GetSetting("proactive_hour_end",   "22"))
 		if hour < hourStart || hour >= hourEnd {
 			log.Printf("自発メッセージ: 時間帯外（%d時）スキップ", hour)
 			continue
 		}
 
 		todayProactiveCount := r.GetTodayProactiveCount()
-		todayConvCount := r.GetTodayConvCount()
+		todayConvCount      := r.GetTodayConvCount()
 
 		result, err := gemini.GenerateProactiveMessage(context.Background(), modelChat, gemini.ProactivePayload{
 			ElapsedTime:         elapsedText,
@@ -624,6 +662,12 @@ func runProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 			TodayProactiveCount: todayProactiveCount,
 			TodayConvCount:      todayConvCount,
 			Status:              statusText,
+			Affection:           status.Affection,
+			Trust:               status.Trust,
+			Fatigue:             status.Fatigue,
+			Mood:                status.Mood,
+			Stress:              status.Stress,
+			Energy:              status.Energy,
 			LastMessage:         lastMsg,
 			RecentEvents:        eventTexts,
 			HotTopics:           topicTexts,
@@ -649,6 +693,12 @@ func runProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 				TodayProactiveCount: todayProactiveCount,
 				TodayConvCount:      todayConvCount,
 				Status:              statusText,
+				Affection:           status.Affection,
+				Trust:               status.Trust,
+				Fatigue:             status.Fatigue,
+				Mood:                status.Mood,
+				Stress:              status.Stress,
+				Energy:              status.Energy,
 				LastMessage:         "",
 				RecentEvents:        eventTexts,
 				HotTopics:           topicTexts,

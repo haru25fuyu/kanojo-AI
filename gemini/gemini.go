@@ -16,6 +16,36 @@ import (
 
 const baseURL = "https://generativelanguage.googleapis.com/v1beta"
 
+// jsonOutputInstruction はJSONのみを返すよう指示する共通プロンプト
+const jsonOutputInstruction = "マークダウン記法（```）は使用せず、生のJSONテキストのみを出力すること。"
+
+// chatResponseInstruction は通常返答用のJSON形式指示
+var chatResponseInstruction = `返答は必ず以下のJSON形式のみで返してください。` + jsonOutputInstruction + `
+
+reply_typeの判断基準：
+- "normal": 通常の返答
+- "short": 短い返事だけ（疲れてる・忙しい・素っ気ない時）
+- "skip": 返信しない（Trust低いのに深い話、しつこい、どうでもいい内容、気分が悪い時など）
+
+{
+  "reply": "返答テキスト（skipの場合は空文字）",
+  "reply_type": "normal" または "short" または "skip",
+  "delta": {
+    "affection": 増減値（整数）,
+    "trust": 増減値,
+    "fatigue": 増減値,
+    "mood": 増減値,
+    "stress": 増減値,
+    "energy": 増減値
+  }
+}`
+
+// buildStatusText はステータスを文字列に変換する共通関数
+func buildStatusText(affection, trust, fatigue, mood, stress, energy int) string {
+	return fmt.Sprintf("好感度:%d 信頼度:%d 疲労度:%d 気分:%d ストレス:%d 活力:%d",
+		affection, trust, fatigue, mood, stress, energy)
+}
+
 type Message struct {
 	Role    string
 	Content string
@@ -42,13 +72,19 @@ type EventResponse struct {
 }
 
 type ProactivePayload struct {
-	TodayProactiveCount int
-	TodayConvCount      int
 	ElapsedTime         string
 	CurrentTime         string
 	TimeOfDay           string
 	ElapsedHours        float64
+	TodayProactiveCount int
+	TodayConvCount      int
 	Status              string
+	Affection           int
+	Trust               int
+	Fatigue             int
+	Mood                int
+	Stress              int
+	Energy              int
 	LastMessage         string
 	RecentEvents        []string
 	HotTopics           []string
@@ -196,26 +232,8 @@ func GetChatResponseWithStatus(ctx context.Context, model string, messages []Mes
 	}
 
 	augmented = append(augmented, Message{
-		Role: "system",
-		Content: `返答は必ず以下のJSON形式のみで返してください。
-
-reply_typeの判断基準：
-- "normal": 通常の返答
-- "short": 短い返事だけ（疲れてる・忙しい・素っ気ない時）
-- "skip": 返信しない（Trust低いのに深い話、しつこい、どうでもいい内容、気分が悪い時など）
-
-{
-  "reply": "返答テキスト（skipの場合は空文字）",
-  "reply_type": "normal" または "short" または "skip",
-  "delta": {
-    "affection": 増減値（整数）,
-    "trust": 増減値,
-    "fatigue": 増減値,
-    "mood": 増減値,
-    "stress": 増減値,
-    "energy": 増減値
-  }
-}`,
+		Role:    "system",
+		Content: chatResponseInstruction,
 	})
 
 	rawResponse, err := GetChatResponseWithContext(ctx, model, augmented)
@@ -261,23 +279,20 @@ func GenerateEvent(ctx context.Context, model string, status string, hour int, c
 		timeOfDay = "深夜"
 	}
 
+	eventPrompt := charaPrompt +
+		"\n\nあなたはこのキャラクターの生活イベントを生成するAIです。\n" +
+		"以下のJSONのみを返してください。\n\n" +
+		"【ルール】\n" +
+		"- キャラクター自身の単独の出来事のみ生成する\n" +
+		"- 「二人で〜」「一緒に〜」「ユーザーと〜」「あなたと〜」は絶対禁止\n" +
+		"- キャラクターが一人で経験する自然な日常の出来事にする\n" +
+		"- キャラクターの性格・世界観に合った出来事にする\n\n" +
+		`{"event": "キャラクター自身の日常の出来事を一文で", "delta": {"affection": 増減値, "trust": 増減値, "fatigue": 増減値, "mood": 増減値, "stress": 増減値, "energy": 増減値}}`
+
 	messages := []Message{
 		{
-			Role: "system",
-			Content: `あなたはキャラクターの生活イベントを生成するAIです。
-以下のJSONのみを返してください。
-
-{
-  "event": "自然な日常の出来事を一文で",
-  "delta": {
-    "affection": 増減値,
-    "trust": 増減値,
-    "fatigue": 増減値,
-    "mood": 増減値,
-    "stress": 増減値,
-    "energy": 増減値
-  }
-}`,
+			Role:    "system",
+			Content: eventPrompt,
 		},
 		{
 			Role:    "user",
@@ -308,17 +323,40 @@ func GenerateProactiveMessage(ctx context.Context, model string, payload Proacti
 	apiKey := os.Getenv("GEMINI_API_KEY")
 	url := fmt.Sprintf("%s/models/%s:generateContent?key=%s", baseURL, model, apiKey)
 
+	// System: 不変のキャラ設定・ルール
+	systemPrompt := payload.CharaPrompt +
+		"\n\n【send判断】\n" +
+		"以下の情報をもとに、このキャラクターとして自発メッセージを送るべきか判断してください。\n" +
+		"- 経過時間・今日の自発送信回数・今日の会話数・現在のステータスを総合的に考慮する\n" +
+		"- キャラクターの性格として「今送る動機があるか」を自分に問いかける\n" +
+		"- 今日すでに自発メッセージを送っていれば、よほどのことがない限りsend: false\n" +
+		"- 今日たくさん会話していれば、もう十分としてsend: false\n" +
+		"- 疲労が高い・気分が悪い・ストレスが高い場合はsend: false\n" +
+		"- 最後の会話が未完了・盛り上がっていた・続きがありそうな場合はsend: false\n" +
+		"- 「おやすみ」「また明日」など会話を締めた直後もsend: false\n" +
+		"- 「なんとなく話しかけたい」程度ではsend: false、明確な話題や理由があるときだけsend: true\n\n" +
+		"【メッセージの作り方】\n" +
+		"- 過去に話していた話題をベースに、その続きや近況をユーザーに質問する形にする\n" +
+		"- 例：「そういえば〇〇ってどうなった？」「この前〇〇って言ってたけど、最近は？」\n" +
+		"- 架空のエピソードや「〜した時みたいに」などの作り話は絶対禁止\n" +
+		"- 「一緒に〜しない？」などユーザーを誘う内容は禁止\n" +
+		"- キャラクター設定の口調・言葉遣い・世界観を必ず守ること\n" +
+		"- 1回のメッセージは2文以内、60文字程度\n\n" +
+		"以下のJSONのみを返してください。" + jsonOutputInstruction + "\n\n" +
+		`{"send": true または false, "message": "送る場合のメッセージ（送らない場合は空文字）"}`
+
+	// User: 動的なコンテキスト
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "現在時刻: %s（%s）\n", payload.CurrentTime, payload.TimeOfDay)
 	fmt.Fprintf(&sb, "経過時間: %s\n", payload.ElapsedTime)
-	fmt.Fprintf(&sb, "現在のステータス: %s\n", payload.Status)
+	fmt.Fprintf(&sb, "ステータス: %s\n", buildStatusText(payload.Affection, payload.Trust, payload.Fatigue, payload.Mood, payload.Stress, payload.Energy))
 	fmt.Fprintf(&sb, "今日の自発メッセージ送信回数: %d回\n", payload.TodayProactiveCount)
 	fmt.Fprintf(&sb, "今日の会話数: %d回\n", payload.TodayConvCount)
 	if payload.LastMessage != "" {
 		fmt.Fprintf(&sb, "最後の会話: %s\n", payload.LastMessage)
 	}
 	if len(payload.RecentEvents) > 0 {
-		sb.WriteString("最近あったこと:\n")
+		sb.WriteString("最近あったこと（これをきっかけにしてもよい）:\n")
 		for _, e := range payload.RecentEvents {
 			fmt.Fprintf(&sb, "  - %s\n", e)
 		}
@@ -329,49 +367,6 @@ func GenerateProactiveMessage(ctx context.Context, model string, payload Proacti
 			fmt.Fprintf(&sb, "  - %s\n", t)
 		}
 	}
-
-	systemPrompt := payload.CharaPrompt + `
-
-【現在の時間帯】` + payload.TimeOfDay + `（` + payload.CurrentTime + `）
-
-【時間帯別の話題指針】
-- 朝（6〜10時）: 今日の予定、朝ごはん、天気、おはようの挨拶
-- 昼（10〜14時）: 仕事・学校の話、ランチ、今日の調子
-- 夕方（14〜18時）: 今日あったこと、帰り道、夕飯の話
-- 夜（18〜22時）: 晩ごはん、今日の振り返り、趣味、ゆっくりした話
-- 深夜（22時〜）: 眠れない話、しんみりした話題、おやすみ前の一言
-
-【時間帯の制約】
-- 現在は「` + payload.TimeOfDay + `」です。この時間帯に合わない話題は絶対に送らない
-- 朝に「お疲れ様」「今日も疲れたね」「お互い頑張りましょう」などは絶対NG
-- 深夜に「今日の予定は？」などは絶対NG
-
-【send判断】
-以下の情報をもとに、このキャラクターとして自発メッセージを送るべきか判断してください。
-- 経過時間・今日の自発送信回数・今日の会話数・現在のステータスを総合的に考慮する
-- キャラクターの性格として「今送る動機があるか」を自分に問いかける
-- 今日すでに自発メッセージを送っていれば、よほどのことがない限りsend: false
-- 今日たくさん会話していれば、もう十分としてsend: false
-- 疲労が高い・気分が悪い・ストレスが高い場合はsend: false
-- 最後の会話が未完了・盛り上がっていた・続きがありそうな場合はsend: false
-- 「おやすみ」「また明日」など会話を締めた直後もsend: false
-- 「なんとなく話しかけたい」程度ではsend: false、明確な話題や理由があるときだけsend: true
-
-【メッセージの作り方】
-- 過去に話していた話題をベースに、その続きや近況をユーザーに質問する形にする
-- 例：「そういえば〇〇ってどうなった？」「この前〇〇って言ってたけど、最近は？」
-- 自分の実際のイベント（最近あったこと）をきっかけにしてもよい
-- 架空のエピソードや「〜した時みたいに」などの作り話は絶対禁止
-- 「一緒に〜しない？」などユーザーを誘う内容は禁止
-- キャラクター設定の口調・言葉遣い・世界観を必ず守ること
-- 1回のメッセージは2文以内、60文字程度
-
-以下のJSONのみを返してください。
-
-{
-  "send": true または false,
-  "message": "送る場合のメッセージ（送らない場合は空文字）"
-}`
 
 	messages := []Message{
 		{Role: "system", Content: systemPrompt},
@@ -444,6 +439,12 @@ func ExtractUserInfo(ctx context.Context, model string, memories []ExtractInfoMe
 - chara_info：「キャラクター:」の発言で自分自身について述べた情報、またはユーザーがキャラクターについて言及した情報
 - 呼びかけ（〇〇くん、〇〇ちゃん）から相手の名前を抽出する
 - 自分自身への呼びかけは自分のinfoとして抽出する
+
+コアフィールドのキー名は必ず以下に統一すること：
+- ユーザーの名前 → key: "name"
+- ユーザーの年齢 → key: "age"
+- ユーザーの性別 → key: "gender"
+- ユーザーの職業・仕事 → key: "job"
 
 {
   "user_info": [
@@ -625,21 +626,8 @@ func GetChatResponseWithImage(ctx context.Context, model string, messages []Mess
 		augmented = append(augmented, Message{Role: "system", Content: statusText})
 	}
 	augmented = append(augmented, Message{
-		Role: "system",
-		Content: `返答は必ず以下のJSON形式のみで返してください。
-
-{
-  "reply": "返答テキスト",
-  "reply_type": "normal",
-  "delta": {
-    "affection": 増減値（整数）,
-    "trust": 増減値,
-    "fatigue": 増減値,
-    "mood": 増減値,
-    "stress": 増減値,
-    "energy": 増減値
-  }
-}`,
+		Role:    "system",
+		Content: chatResponseInstruction,
 	})
 
 	var systemParts []map[string]interface{}
