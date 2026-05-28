@@ -29,16 +29,28 @@ reply_typeの判断基準：
 
 {
   "reply": "返答テキスト（skipの場合は空文字）",
-  "reply_type": "normal" または "short" または "skip",
-  "delta": {
-    "affection": 増減値（整数）,
-    "trust": 増減値,
-    "fatigue": 増減値,
-    "mood": 増減値,
-    "stress": 増減値,
-    "energy": 増減値
-  }
+  "reply_type": "normal" または "short" または "skip"
 }`
+
+// deltaPresets は reply_type ごとの固定ステータス変動値
+var deltaPresets = map[string]StatusDelta{
+	"normal": {Affection: 2, Trust: 1, Fatigue: 3, Mood: 1, Stress: 1, Energy: -2},
+	"short":  {Affection: 0, Trust: 0, Fatigue: 5, Mood: -2, Stress: 3, Energy: -3},
+	"skip":   {Affection: -1, Trust: -1, Fatigue: 2, Mood: -5, Stress: 5, Energy: -1},
+}
+
+// ── thinkingConfig プリセット ──────────────────────────
+
+// fastConfig: 会話返答用。thinkingオフで最速。
+var fastConfig = map[string]interface{}{
+	"thinkingConfig": map[string]interface{}{"thinkingBudget": 0},
+}
+
+// jsonConfig: JSON抽出用。thinking 0 から始める（精度荒れたら256に上げる）。
+var jsonConfig = map[string]interface{}{
+	"thinkingConfig":   map[string]interface{}{"thinkingBudget": 0},
+	"responseMimeType": "application/json",
+}
 
 // buildStatusText はステータスを文字列に変換する共通関数
 func buildStatusText(affection, trust, fatigue, mood, stress, energy int) string {
@@ -64,11 +76,17 @@ type ChatResponse struct {
 	Reply     string
 	ReplyType string
 	Delta     StatusDelta
+	Timings   ResponseTimings // 計測結果（呼び出し元がデバッグ表示に使う）
+}
+
+// ResponseTimings は各ステップの所要時間を保持する
+type ResponseTimings struct {
+	GeminiAPI time.Duration // Gemini API 呼び出し時間
+	Total     time.Duration // GetChatResponseWithStatus 全体
 }
 
 type EventResponse struct {
-	Event string      `json:"event"`
-	Delta StatusDelta `json:"delta"`
+	Event string `json:"event"`
 }
 
 type ProactivePayload struct {
@@ -96,7 +114,9 @@ type ProactiveResponse struct {
 	Message string `json:"message"`
 }
 
-func buildPayload(messages []Message) map[string]interface{} {
+// buildPayload はメッセージとオプションの generationConfig から Gemini API ペイロードを組み立てる。
+// genConfig が nil の場合は generationConfig を含めない（既存動作を維持）。
+func buildPayload(messages []Message, genConfig map[string]interface{}) map[string]interface{} {
 	var systemParts []map[string]interface{}
 	var contents []map[string]interface{}
 
@@ -118,6 +138,9 @@ func buildPayload(messages []Message) map[string]interface{} {
 	payload := map[string]interface{}{"contents": contents}
 	if len(systemParts) > 0 {
 		payload["system_instruction"] = map[string]interface{}{"parts": systemParts}
+	}
+	if genConfig != nil {
+		payload["generationConfig"] = genConfig
 	}
 	return payload
 }
@@ -172,7 +195,7 @@ func callGemini(ctx context.Context, url string, payload interface{}) ([]byte, e
 }
 
 func GetChatResponse(model string, messages []Message) string {
-	res, err := GetChatResponseWithContext(context.Background(), model, messages)
+	res, err := GetChatResponseWithContext(context.Background(), model, messages, nil)
 	if err != nil {
 		log.Printf("GetChatResponse エラー: %v", err)
 		return "（ちょっと調子悪いみたい……）"
@@ -180,11 +203,13 @@ func GetChatResponse(model string, messages []Message) string {
 	return res
 }
 
-func GetChatResponseWithContext(ctx context.Context, model string, messages []Message) (string, error) {
+// GetChatResponseWithContext は genConfig を受け取り buildPayload に渡す。
+// nil を渡すと generationConfig なし（既存動作）。
+func GetChatResponseWithContext(ctx context.Context, model string, messages []Message, genConfig map[string]interface{}) (string, error) {
 	apiKey := os.Getenv("GEMINI_API_KEY")
 	url := fmt.Sprintf("%s/models/%s:generateContent?key=%s", baseURL, model, apiKey)
 
-	body, err := callGemini(ctx, url, buildPayload(messages))
+	body, err := callGemini(ctx, url, buildPayload(messages, genConfig))
 	if err != nil {
 		return "", err
 	}
@@ -221,7 +246,12 @@ func GetEmbedding(text string) []float64 {
 	return resp.Embedding.Values
 }
 
+// GetChatResponseWithStatus は会話返答を生成する。
+// thinkingBudget: 0 の fastConfig を使って最速で返す。
+// ChatResponse.Timings に各ステップの計測結果を含める。
 func GetChatResponseWithStatus(ctx context.Context, model string, messages []Message, status string) (*ChatResponse, error) {
+	totalStart := time.Now()
+
 	augmented := append([]Message{}, messages...)
 
 	for i, m := range augmented {
@@ -236,7 +266,11 @@ func GetChatResponseWithStatus(ctx context.Context, model string, messages []Mes
 		Content: chatResponseInstruction,
 	})
 
-	rawResponse, err := GetChatResponseWithContext(ctx, model, augmented)
+	// ── Gemini API 呼び出し（thinkingオフ） ──
+	apiStart := time.Now()
+	rawResponse, err := GetChatResponseWithContext(ctx, model, augmented, fastConfig)
+	apiElapsed := time.Since(apiStart)
+
 	if err != nil {
 		log.Printf("GetChatResponseWithContext失敗: %v", err)
 		return nil, err
@@ -247,21 +281,33 @@ func GetChatResponseWithStatus(ctx context.Context, model string, messages []Mes
 	start := strings.Index(rawResponse, "{")
 	end := strings.LastIndex(rawResponse, "}")
 	if start == -1 || end == -1 {
-		return &ChatResponse{Reply: rawResponse}, nil
+		return &ChatResponse{
+			Reply:   rawResponse,
+			Timings: ResponseTimings{GeminiAPI: apiElapsed, Total: time.Since(totalStart)},
+		}, nil
 	}
 
 	var result struct {
-		Reply     string      `json:"reply"`
-		ReplyType string      `json:"reply_type"`
-		Delta     StatusDelta `json:"delta"`
+		Reply     string `json:"reply"`
+		ReplyType string `json:"reply_type"`
 	}
 	if err := json.Unmarshal([]byte(rawResponse[start:end+1]), &result); err != nil {
-		return &ChatResponse{Reply: rawResponse, ReplyType: "normal"}, nil
+		return &ChatResponse{
+			Reply:     rawResponse,
+			ReplyType: "normal",
+			Delta:     deltaPresets["normal"],
+			Timings:   ResponseTimings{GeminiAPI: apiElapsed, Total: time.Since(totalStart)},
+		}, nil
 	}
 	if result.ReplyType == "" {
 		result.ReplyType = "normal"
 	}
-	return &ChatResponse{Reply: result.Reply, ReplyType: result.ReplyType, Delta: result.Delta}, nil
+	return &ChatResponse{
+		Reply:     result.Reply,
+		ReplyType: result.ReplyType,
+		Delta:     deltaPresets[result.ReplyType],
+		Timings:   ResponseTimings{GeminiAPI: apiElapsed, Total: time.Since(totalStart)},
+	}, nil
 }
 
 func GenerateEvent(ctx context.Context, model string, status string, hour int, charaPrompt string) (*EventResponse, error) {
@@ -287,7 +333,7 @@ func GenerateEvent(ctx context.Context, model string, status string, hour int, c
 		"- 「二人で〜」「一緒に〜」「ユーザーと〜」「あなたと〜」は絶対禁止\n" +
 		"- キャラクターが一人で経験する自然な日常の出来事にする\n" +
 		"- キャラクターの性格・世界観に合った出来事にする\n\n" +
-		`{"event": "キャラクター自身の日常の出来事を一文で", "delta": {"affection": 増減値, "trust": 増減値, "fatigue": 増減値, "mood": 増減値, "stress": 増減値, "energy": 増減値}}`
+		`{"event": "キャラクター自身の日常の出来事を一文で"}`
 
 	messages := []Message{
 		{
@@ -300,7 +346,7 @@ func GenerateEvent(ctx context.Context, model string, status string, hour int, c
 		},
 	}
 
-	rawResponse, err := GetChatResponseWithContext(ctx, model, messages)
+	rawResponse, err := GetChatResponseWithContext(ctx, model, messages, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -373,7 +419,9 @@ func GenerateProactiveMessage(ctx context.Context, model string, payload Proacti
 		{Role: "user", Content: sb.String()},
 	}
 
-	reqPayload := buildPayload(messages)
+	// proactive は google_search 使うので buildPayload 直接呼んで tools を足す
+	// thinkingConfig は入れない（tools 併用時に判断が荒れる）
+	reqPayload := buildPayload(messages, nil)
 	reqPayload["tools"] = []map[string]interface{}{
 		{"google_search": map[string]interface{}{}},
 	}
@@ -471,7 +519,8 @@ func ExtractUserInfo(ctx context.Context, model string, memories []ExtractInfoMe
 		},
 	}
 
-	rawResponse, err := GetChatResponseWithContext(ctx, model, messages)
+	// JSON抽出なので jsonConfig を使う
+	rawResponse, err := GetChatResponseWithContext(ctx, model, messages, jsonConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -527,7 +576,8 @@ func ExtractSchedules(ctx context.Context, model string, memories []string) ([]S
 		},
 	}
 
-	rawResponse, err := GetChatResponseWithContext(ctx, model, messages)
+	// JSON配列抽出なので jsonConfig を使う
+	rawResponse, err := GetChatResponseWithContext(ctx, model, messages, jsonConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -599,10 +649,17 @@ func DescribeImage(ctx context.Context, model string, imageURL string) (string, 
 	return parseTextResponse(body)
 }
 
+// GetChatResponseWithImage は画像付き会話の返答を生成する。
+// thinkingBudget: 0 の fastConfig を適用。
+// ResponseTimings に画像DL時間・API呼び出し時間を含める。
 func GetChatResponseWithImage(ctx context.Context, model string, messages []Message, imageURL string, statusText string) (*ChatResponse, error) {
+	totalStart := time.Now()
+
 	apiKey := os.Getenv("GEMINI_API_KEY")
 	url := fmt.Sprintf("%s/models/%s:generateContent?key=%s", baseURL, model, apiKey)
 
+	// 画像DL
+	dlStart := time.Now()
 	resp, err := http.Get(imageURL)
 	if err != nil {
 		return nil, fmt.Errorf("画像ダウンロード失敗: %w", err)
@@ -613,6 +670,8 @@ func GetChatResponseWithImage(ctx context.Context, model string, messages []Mess
 	if err != nil {
 		return nil, fmt.Errorf("画像読み込み失敗: %w", err)
 	}
+	dlElapsed := time.Since(dlStart)
+	log.Printf("[画像] DL: %dms (%d bytes)", dlElapsed.Milliseconds(), len(imageData))
 
 	mimeType := resp.Header.Get("Content-Type")
 	if mimeType == "" {
@@ -666,8 +725,15 @@ func GetChatResponseWithImage(ctx context.Context, model string, messages []Mess
 	if len(systemParts) > 0 {
 		payload["system_instruction"] = map[string]interface{}{"parts": systemParts}
 	}
+	// thinking オフ
+	payload["generationConfig"] = fastConfig
 
+	// API呼び出し
+	apiStart := time.Now()
 	body, err := callGemini(ctx, url, payload)
+	apiElapsed := time.Since(apiStart)
+	log.Printf("[画像] API: %dms", apiElapsed.Milliseconds())
+
 	if err != nil {
 		return nil, err
 	}
@@ -681,19 +747,32 @@ func GetChatResponseWithImage(ctx context.Context, model string, messages []Mess
 	start := strings.Index(text, "{")
 	end := strings.LastIndex(text, "}")
 	if start == -1 || end == -1 {
-		return &ChatResponse{Reply: text, ReplyType: "normal"}, nil
+		return &ChatResponse{
+			Reply:     text,
+			ReplyType: "normal",
+			Timings:   ResponseTimings{GeminiAPI: apiElapsed, Total: time.Since(totalStart)},
+		}, nil
 	}
 
 	var result struct {
-		Reply     string      `json:"reply"`
-		ReplyType string      `json:"reply_type"`
-		Delta     StatusDelta `json:"delta"`
+		Reply     string `json:"reply"`
+		ReplyType string `json:"reply_type"`
 	}
 	if err := json.Unmarshal([]byte(text[start:end+1]), &result); err != nil {
-		return &ChatResponse{Reply: text, ReplyType: "normal"}, nil
+		return &ChatResponse{
+			Reply:     text,
+			ReplyType: "normal",
+			Delta:     deltaPresets["normal"],
+			Timings:   ResponseTimings{GeminiAPI: apiElapsed, Total: time.Since(totalStart)},
+		}, nil
 	}
 	if result.ReplyType == "" {
 		result.ReplyType = "normal"
 	}
-	return &ChatResponse{Reply: result.Reply, ReplyType: result.ReplyType, Delta: result.Delta}, nil
+	return &ChatResponse{
+		Reply:     result.Reply,
+		ReplyType: result.ReplyType,
+		Delta:     deltaPresets[result.ReplyType],
+		Timings:   ResponseTimings{GeminiAPI: apiElapsed, Total: time.Since(totalStart)},
+	}, nil
 }

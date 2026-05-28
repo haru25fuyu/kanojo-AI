@@ -10,7 +10,6 @@ import (
 type BaseMessagesParams struct {
 	RulePrompt   string
 	CharaPrompt  string
-	StatusText   string
 	Profile      *UserProfile
 	UserInfos    []UserInfoEntry
 	Topics       []TopicEntry
@@ -57,13 +56,13 @@ func BuildBaseMessages(p BaseMessagesParams) []Message {
 		Content: p.RulePrompt,
 	})
 
-	// キャラ設定
+	// キャラ設定（statusはGetChatResponseWithStatusがここに追記する）
 	messages = append(messages, Message{
 		Role:    "system",
 		Content: p.CharaPrompt,
 	})
 
-	// 現在時刻（statusがここに追記される）
+	// 現在時刻
 	weekdays := []string{"日", "月", "火", "水", "木", "金", "土"}
 	now := time.Now()
 	messages = append(messages, Message{
@@ -164,25 +163,4 @@ func BuildBaseMessages(p BaseMessagesParams) []Message {
 	}
 
 	return messages
-}
-
-// BuildProactiveInstruction は自発メッセージ用の状況情報を生成する
-func BuildProactiveInstruction(
-	currentTime, timeOfDay, elapsedText string,
-	todayProactiveCount, todayConvCount int,
-	affection, trust, fatigue, mood, stress, energy int,
-) string {
-	return fmt.Sprintf(
-		"【自発メッセージの状況】\n"+
-		"現在時刻: %s（%s）\n"+
-		"最後の会話からの経過時間: %s\n"+
-		"今日の自発送信回数: %d回\n"+
-		"今日の会話数: %d回\n"+
-		"ステータス: 好感度:%d 信頼度:%d 疲労度:%d 気分:%d ストレス:%d 活力:%d\n"+
-		"送る内容がなければreply_type: skipにすること。送る場合は過去の話題への質問や近況確認を自然に。架空エピソード禁止。2文以内60文字程度。",
-		currentTime, timeOfDay,
-		elapsedText,
-		todayProactiveCount, todayConvCount,
-		affection, trust, fatigue, mood, stress, energy,
-	)
 }

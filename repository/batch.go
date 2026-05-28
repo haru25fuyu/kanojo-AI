@@ -163,7 +163,7 @@ func AssessTopic(ctx context.Context, model string, memories []Memory) (*TopicAs
 		},
 	}
 
-	rawResponse, err := gemini.GetChatResponseWithContext(ctx, model, messages)
+	rawResponse, err := gemini.GetChatResponseWithContext(ctx, model, messages, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -206,9 +206,9 @@ func (r *MemoryRepository) SummarizeConversation(modelBatch string, convID strin
 
 // applySleepRecoveryStatic は固定値で睡眠回復を適用する
 func (r *MemoryRepository) applySleepRecoveryStatic() {
-	energy := r.getSettingInt("sleep_recovery_static_energy", 5000)
+	energy  := r.getSettingInt("sleep_recovery_static_energy",  5000)
 	fatigue := r.getSettingInt("sleep_recovery_static_fatigue", 5000)
-	stress := r.getSettingInt("sleep_recovery_static_stress", 2000)
+	stress  := r.getSettingInt("sleep_recovery_static_stress",  2000)
 
 	r.db.Exec(`
 		UPDATE partner_status SET
@@ -249,10 +249,10 @@ func (r *MemoryRepository) applySleepRecoveryDynamic() {
 
 	// 8時間睡眠を100%として回復量を計算
 	ratio := sleepHours / 8.0
-	energy := int(ratio * 6000)
+	energy  := int(ratio * 6000)
 	fatigue := int(ratio * 6000)
-	stress := int(ratio * 2000)
-	mood := int(ratio * 1000)
+	stress  := int(ratio * 2000)
+	mood    := int(ratio * 1000)
 
 	r.db.Exec(`
 		UPDATE partner_status SET
