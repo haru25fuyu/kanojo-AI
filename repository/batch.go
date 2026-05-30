@@ -148,7 +148,7 @@ func AssessTopic(ctx context.Context, model string, memories []Memory) (*TopicAs
 - 「アシスタント」「AI」という表現は使わない
 - キャラクターを「彼女」「相手」などと表現する
 - ユーザー視点の自然な会話の要約にする
-- summaryは会話量に応じて1〜5文で書く。何を話したか・どんな雰囲気だったか・感情的なニュアンス・印象的なエピソード・話題の結末や続きがあるかを含める
+- summaryは会話量に応じて1〜7文で書く。何を話したか・どんな雰囲気だったか・感情的なニュアンス・印象的なエピソード・話題の結末や続きがあるかを含める
 
 {
   "keywords": ["キーワード1", "キーワード2", "キーワード3"],
@@ -206,9 +206,9 @@ func (r *MemoryRepository) SummarizeConversation(modelBatch string, convID strin
 
 // applySleepRecoveryStatic は固定値で睡眠回復を適用する
 func (r *MemoryRepository) applySleepRecoveryStatic() {
-	energy  := r.getSettingInt("sleep_recovery_static_energy",  5000)
+	energy := r.getSettingInt("sleep_recovery_static_energy", 5000)
 	fatigue := r.getSettingInt("sleep_recovery_static_fatigue", 5000)
-	stress  := r.getSettingInt("sleep_recovery_static_stress",  2000)
+	stress := r.getSettingInt("sleep_recovery_static_stress", 2000)
 
 	r.db.Exec(`
 		UPDATE partner_status SET
@@ -249,10 +249,10 @@ func (r *MemoryRepository) applySleepRecoveryDynamic() {
 
 	// 8時間睡眠を100%として回復量を計算
 	ratio := sleepHours / 8.0
-	energy  := int(ratio * 6000)
+	energy := int(ratio * 6000)
 	fatigue := int(ratio * 6000)
-	stress  := int(ratio * 2000)
-	mood    := int(ratio * 1000)
+	stress := int(ratio * 2000)
+	mood := int(ratio * 1000)
 
 	r.db.Exec(`
 		UPDATE partner_status SET

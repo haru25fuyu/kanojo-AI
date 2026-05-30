@@ -168,13 +168,15 @@ func RunMigrations(db *sqlx.DB) {
 				value TEXT        NOT NULL
 			)`,
 		},
+		//gemini-3-flash-preview
+		//gemini-3.1-flash-lite
 		{
 			name: "default settings",
 			sql: `INSERT INTO settings (key, value) VALUES
 				('avg_threshold',       '0.38'),
 				('max_threshold',       '0.50'),
 				('topic_threshold',     '0.50'),
-				('model_chat',          'gemini-3-flash-preview'),
+				('model_chat',          'gemini-3.1-flash-lite'),・
 				('model_batch',         'gemini-3.1-flash-lite'),
 				('system_prompt_rule',  'あなたは人間の女性として自然な日常会話をしてください。AIや機械であることを意識させる発言は絶対にしない。専門用語や難しい知識をひけらかさない。日常的な話題に徹する。'),
 				('debug_mode',          'true'),

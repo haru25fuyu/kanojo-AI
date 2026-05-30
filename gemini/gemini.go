@@ -89,31 +89,6 @@ type EventResponse struct {
 	Event string `json:"event"`
 }
 
-type ProactivePayload struct {
-	ElapsedTime         string
-	CurrentTime         string
-	TimeOfDay           string
-	ElapsedHours        float64
-	TodayProactiveCount int
-	TodayConvCount      int
-	Status              string
-	Affection           int
-	Trust               int
-	Fatigue             int
-	Mood                int
-	Stress              int
-	Energy              int
-	LastMessage         string
-	RecentEvents        []string
-	HotTopics           []string
-	CharaPrompt         string
-}
-
-type ProactiveResponse struct {
-	Send    bool   `json:"send"`
-	Message string `json:"message"`
-}
-
 // buildPayload はメッセージとオプションの generationConfig から Gemini API ペイロードを組み立てる。
 // genConfig が nil の場合は generationConfig を含めない（既存動作を維持）。
 func buildPayload(messages []Message, genConfig map[string]interface{}) map[string]interface{} {
@@ -365,91 +340,6 @@ func GenerateEvent(ctx context.Context, model string, status string, hour int, c
 	return &result, nil
 }
 
-func GenerateProactiveMessage(ctx context.Context, model string, payload ProactivePayload) (*ProactiveResponse, error) {
-	apiKey := os.Getenv("GEMINI_API_KEY")
-	url := fmt.Sprintf("%s/models/%s:generateContent?key=%s", baseURL, model, apiKey)
-
-	// System: 不変のキャラ設定・ルール
-	systemPrompt := payload.CharaPrompt +
-		"\n\n【send判断】\n" +
-		"以下の情報をもとに、このキャラクターとして自発メッセージを送るべきか判断してください。\n" +
-		"- 経過時間・今日の自発送信回数・今日の会話数・現在のステータスを総合的に考慮する\n" +
-		"- キャラクターの性格として「今送る動機があるか」を自分に問いかける\n" +
-		"- 今日すでに自発メッセージを送っていれば、よほどのことがない限りsend: false\n" +
-		"- 今日たくさん会話していれば、もう十分としてsend: false\n" +
-		"- 疲労が高い・気分が悪い・ストレスが高い場合はsend: false\n" +
-		"- 最後の会話が未完了・盛り上がっていた・続きがありそうな場合はsend: false\n" +
-		"- 「おやすみ」「また明日」など会話を締めた直後もsend: false\n" +
-		"- 「なんとなく話しかけたい」程度ではsend: false、明確な話題や理由があるときだけsend: true\n\n" +
-		"【メッセージの作り方】\n" +
-		"- 過去に話していた話題をベースに、その続きや近況をユーザーに質問する形にする\n" +
-		"- 例：「そういえば〇〇ってどうなった？」「この前〇〇って言ってたけど、最近は？」\n" +
-		"- 架空のエピソードや「〜した時みたいに」などの作り話は絶対禁止\n" +
-		"- 「一緒に〜しない？」などユーザーを誘う内容は禁止\n" +
-		"- キャラクター設定の口調・言葉遣い・世界観を必ず守ること\n" +
-		"- 1回のメッセージは2文以内、60文字程度\n\n" +
-		"以下のJSONのみを返してください。" + jsonOutputInstruction + "\n\n" +
-		`{"send": true または false, "message": "送る場合のメッセージ（送らない場合は空文字）"}`
-
-	// User: 動的なコンテキスト
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "現在時刻: %s（%s）\n", payload.CurrentTime, payload.TimeOfDay)
-	fmt.Fprintf(&sb, "経過時間: %s\n", payload.ElapsedTime)
-	fmt.Fprintf(&sb, "ステータス: %s\n", buildStatusText(payload.Affection, payload.Trust, payload.Fatigue, payload.Mood, payload.Stress, payload.Energy))
-	fmt.Fprintf(&sb, "今日の自発メッセージ送信回数: %d回\n", payload.TodayProactiveCount)
-	fmt.Fprintf(&sb, "今日の会話数: %d回\n", payload.TodayConvCount)
-	if payload.LastMessage != "" {
-		fmt.Fprintf(&sb, "最後の会話: %s\n", payload.LastMessage)
-	}
-	if len(payload.RecentEvents) > 0 {
-		sb.WriteString("最近あったこと（これをきっかけにしてもよい）:\n")
-		for _, e := range payload.RecentEvents {
-			fmt.Fprintf(&sb, "  - %s\n", e)
-		}
-	}
-	if len(payload.HotTopics) > 0 {
-		sb.WriteString("過去に話していた話題:\n")
-		for _, t := range payload.HotTopics {
-			fmt.Fprintf(&sb, "  - %s\n", t)
-		}
-	}
-
-	messages := []Message{
-		{Role: "system", Content: systemPrompt},
-		{Role: "user", Content: sb.String()},
-	}
-
-	// proactive は google_search 使うので buildPayload 直接呼んで tools を足す
-	// thinkingConfig は入れない（tools 併用時に判断が荒れる）
-	reqPayload := buildPayload(messages, nil)
-	reqPayload["tools"] = []map[string]interface{}{
-		{"google_search": map[string]interface{}{}},
-	}
-
-	body, err := callGemini(ctx, url, reqPayload)
-	if err != nil {
-		return nil, err
-	}
-
-	text, err := parseTextResponse(body)
-	if err != nil {
-		return &ProactiveResponse{Send: false}, nil
-	}
-
-	text = strings.TrimSpace(text)
-	start := strings.Index(text, "{")
-	end := strings.LastIndex(text, "}")
-	if start == -1 || end == -1 {
-		return &ProactiveResponse{Send: false}, nil
-	}
-
-	var result ProactiveResponse
-	if err := json.Unmarshal([]byte(text[start:end+1]), &result); err != nil {
-		return &ProactiveResponse{Send: false}, nil
-	}
-	return &result, nil
-}
-
 type UserInfoItem struct {
 	Key        string  `json:"key"`
 	Value      string  `json:"value"`
@@ -630,7 +520,7 @@ func DescribeImage(ctx context.Context, model string, imageURL string) (string, 
 			{
 				"role": "user",
 				"parts": []map[string]interface{}{
-					{"text": "この画像を10文字程度で一言で説明してください。日本語で。"},
+					{"text": "この画像を40文字程度で一言で説明してください。日本語で。"},
 					{
 						"inline_data": map[string]interface{}{
 							"mime_type": mimeType,
