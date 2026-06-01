@@ -76,9 +76,27 @@ func (r *MemoryRepository) SearchTopicsByEmbedding(embedding []float64, threshol
 	return topics, err
 }
 
-// GetConvSummariesByTopic はトピックに紐づくconversation_topicsのsummaryを熱量順に取得する
-func (r *MemoryRepository) GetConvSummariesByTopic(topicID string, limit int) ([]string, error) {
+// GetConvSummariesByTopic はembedding類似度で関連性の高い会話要約を取得する。
+// embeddingがnilの場合はdate DESCで新しい順に取得する（後方互換）。
+func (r *MemoryRepository) GetConvSummariesByTopic(topicID string, limit int, embedding []float64) ([]string, error) {
 	var summaries []string
+
+	if embedding != nil {
+		embeddingStr := toEmbeddingStr(embedding)
+		err := r.db.Select(&summaries, `
+			SELECT summary FROM conversation_topics
+			WHERE topic_id = $1
+			  AND summary != ''
+			  AND embedding IS NOT NULL
+			ORDER BY (embedding <=> $2::vector) ASC
+			LIMIT $3`,
+			topicID, embeddingStr, limit)
+		if err == nil && len(summaries) > 0 {
+			return summaries, nil
+		}
+		// embedding検索で取れなかった場合はdate DESCにフォールバック
+	}
+
 	err := r.db.Select(&summaries, `
 		SELECT summary FROM conversation_topics
 		WHERE topic_id = $1 AND summary != ''
@@ -99,11 +117,12 @@ func convSummaryLimit(heat float64) int {
 	}
 }
 
-// FillConvSummaries はtopicsスライスにconvSummariesを補完する
-func (r *MemoryRepository) FillConvSummaries(topics []Topic) []Topic {
+// FillConvSummaries はtopicsスライスにconvSummariesを補完する。
+// embeddingがnilの場合はdate DESCで取得する。
+func (r *MemoryRepository) FillConvSummaries(topics []Topic, embedding []float64) []Topic {
 	for i, t := range topics {
 		limit := convSummaryLimit(t.Heat)
-		summaries, err := r.GetConvSummariesByTopic(t.ID, limit)
+		summaries, err := r.GetConvSummariesByTopic(t.ID, limit, embedding)
 		if err == nil {
 			topics[i].ConvSummaries = summaries
 		}

@@ -145,16 +145,19 @@ func AssessTopic(ctx context.Context, model string, memories []Memory) (*TopicAs
 与えられた会話履歴を分析し、以下のJSONのみを返してください。他の文字は一切出力しないでください。
 
 【要約のルール】
+- 何を話したか（具体的な内容・固有名詞・出来事・数字）を最優先で書く
+- 「楽しそうだった」だけで終わらず「〇〇について話して盛り上がった」まで書く
+- 次の会話で活かせる情報（続きがありそうか・約束・気になってること・未解決の話題）を含める
+- 雰囲気や感情は補足程度に添える（メインにしない）
 - 「アシスタント」「AI」という表現は使わない
 - キャラクターを「彼女」「相手」などと表現する
-- ユーザー視点の自然な会話の要約にする
-- summaryは会話量に応じて1〜7文で書く。何を話したか・どんな雰囲気だったか・感情的なニュアンス・印象的なエピソード・話題の結末や続きがあるかを含める
+- summaryは会話量に応じて1〜5文で書く
 
 {
   "keywords": ["キーワード1", "キーワード2", "キーワード3"],
   "heat_score": 0.0から1.0の数値（会話の感情的な濃さ・重要度。雑談=0.1、感情的な話題=0.8〜1.0）,
   "reason": "査定理由を一言で",
-  "summary": "この話題を1〜5文で要約（日本語）"
+  "summary": "この話題を1〜7文で要約（日本語）"
 }`,
 		},
 		{
@@ -183,9 +186,9 @@ func AssessTopic(ctx context.Context, model string, memories []Memory) (*TopicAs
 	return &assessment, nil
 }
 
-// SummarizeConversation は終了したconversationを要約してconversation_topicsに保存する
+// SummarizeConversation は終了したconversationを要約してconversation_topicsに保存する。
+// 要約テキストのembeddingも計算して保存する。
 func (r *MemoryRepository) SummarizeConversation(modelBatch string, convID string, topicID string) error {
-	// 修正: GetRecentMemories → GetAllMemoriesInConversation
 	memories, err := r.GetAllMemoriesInConversation(convID)
 	if err != nil || len(memories) == 0 {
 		return err
@@ -196,11 +199,35 @@ func (r *MemoryRepository) SummarizeConversation(modelBatch string, convID strin
 		return err
 	}
 
-	query := `
-		UPDATE conversation_topics
-		SET summary = $1
-		WHERE conversation_id = $2 AND topic_id = $3`
-	_, err = r.db.Exec(query, assessment.Summary, convID, topicID)
+	// 要約のembeddingを計算
+	embeddingJSON := "NULL"
+	if embedding := gemini.GetEmbedding(assessment.Summary); embedding != nil {
+		if b, err := json.Marshal(embedding); err == nil {
+			embeddingJSON = string(b)
+			_ = embeddingJSON
+		}
+		// embeddingをDBに保存
+		_, err = r.db.Exec(`
+			UPDATE conversation_topics
+			SET summary = $1, embedding = $2
+			WHERE conversation_id = $3 AND topic_id = $4`,
+			assessment.Summary, fmt.Sprintf("%v", embedding), convID, topicID)
+		if err != nil {
+			// embeddingなしでフォールバック
+			_, err = r.db.Exec(`
+				UPDATE conversation_topics
+				SET summary = $1
+				WHERE conversation_id = $2 AND topic_id = $3`,
+				assessment.Summary, convID, topicID)
+		}
+	} else {
+		_, err = r.db.Exec(`
+			UPDATE conversation_topics
+			SET summary = $1
+			WHERE conversation_id = $2 AND topic_id = $3`,
+			assessment.Summary, convID, topicID)
+	}
+
 	return err
 }
 
@@ -214,8 +241,7 @@ func (r *MemoryRepository) applySleepRecoveryStatic() {
 		UPDATE partner_status SET
 			energy  = LEAST(10000,  energy  + $1),
 			fatigue = GREATEST(0,   fatigue - $2),
-			stress  = GREATEST(0,   stress  - $3),
-			mood    = LEAST(10000,  mood    + 500)
+			stress  = GREATEST(0,   stress  - $3)
 		WHERE character_id = $4`,
 		energy, fatigue, stress, r.CharacterID)
 	log.Printf("睡眠回復（固定）: energy+%d fatigue-%d stress-%d", energy, fatigue, stress)
@@ -229,12 +255,10 @@ func (r *MemoryRepository) applySleepRecoveryDynamic() {
 		WHERE character_id = $1
 		ORDER BY id DESC LIMIT 1`, r.CharacterID)
 	if err != nil {
-		// 履歴なしの場合は固定回復にフォールバック
 		r.applySleepRecoveryStatic()
 		return
 	}
 
-	// 22時より前に会話が終わってたら22時から睡眠開始とみなす
 	sleepStart := lastMsgTime
 	if sleepStart.Hour() < 22 {
 		sleepStart = time.Date(
@@ -243,11 +267,9 @@ func (r *MemoryRepository) applySleepRecoveryDynamic() {
 		)
 	}
 
-	// 睡眠時間を計算（最大8時間）
 	sleepHours := time.Since(sleepStart).Hours()
 	sleepHours = math.Min(math.Max(sleepHours, 0), 8)
 
-	// 8時間睡眠を100%として回復量を計算
 	ratio := sleepHours / 8.0
 	energy := int(ratio * 6000)
 	fatigue := int(ratio * 6000)

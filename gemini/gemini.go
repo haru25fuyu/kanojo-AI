@@ -34,9 +34,9 @@ reply_typeの判断基準：
 
 // deltaPresets は reply_type ごとの固定ステータス変動値
 var deltaPresets = map[string]StatusDelta{
-	"normal": {Affection: 2, Trust: 1, Fatigue: 3, Mood: 1, Stress: 1, Energy: -2},
-	"short":  {Affection: 0, Trust: 0, Fatigue: 5, Mood: -2, Stress: 3, Energy: -3},
-	"skip":   {Affection: -1, Trust: -1, Fatigue: 2, Mood: -5, Stress: 5, Energy: -1},
+	"normal": {Affection: 5, Trust: 3, Fatigue: 5, Mood: 3, Stress: 2, Energy: -3},
+	"short":  {Affection: 2, Trust: 1, Fatigue: 8, Mood: -3, Stress: 4, Energy: -5},
+	"skip":   {Affection: -3, Trust: -2, Fatigue: 3, Mood: -8, Stress: 6, Energy: -2},
 }
 
 // ── thinkingConfig プリセット ──────────────────────────
@@ -377,19 +377,25 @@ func ExtractUserInfo(ctx context.Context, model string, memories []ExtractInfoMe
 - chara_info：「キャラクター:」の発言で自分自身について述べた情報、またはユーザーがキャラクターについて言及した情報
 - 呼びかけ（〇〇くん、〇〇ちゃん）から相手の名前を抽出する
 - 自分自身への呼びかけは自分のinfoとして抽出する
+- 状態の変化（別れた・転職した・やめた・変わった等）は必ず抽出する。変化後の状態をvalueに入れる
+  - 例：「彼女と別れた」→ key: "恋愛状況" value: "彼女なし（別れた）"
+  - 例：「仕事やめた」→ key: "job" value: "無職（退職）"
+  - 例：「引っ越した」→ key: "居住地" value: "引っ越し後の場所（あれば）"
+- 過去形・完了形の発言も見逃さない（〜した、〜になった、〜でなくなった）
 
 コアフィールドのキー名は必ず以下に統一すること：
 - ユーザーの名前 → key: "name"
 - ユーザーの年齢 → key: "age"
 - ユーザーの性別 → key: "gender"
 - ユーザーの職業・仕事 → key: "job"
+- ユーザーの恋愛状況 → key: "恋愛状況"
 
 {
   "user_info": [
     {
       "key": "情報のキー（例：名前、職業、趣味）",
       "value": "情報の値",
-      "importance": 0.0から1.0（名前=1.0、職業・趣味=0.7、一時的な気分=0.2）
+      "importance": 0.0から1.0（名前=1.0、職業・趣味=0.7、恋愛状況の変化=0.8、一時的な気分=0.2）
     }
   ],
   "chara_info": [
@@ -520,7 +526,7 @@ func DescribeImage(ctx context.Context, model string, imageURL string) (string, 
 			{
 				"role": "user",
 				"parts": []map[string]interface{}{
-					{"text": "この画像を40文字程度で一言で説明してください。日本語で。"},
+					{"text": "この画像を30文字程度で一言で説明してください。日本語で。"},
 					{
 						"inline_data": map[string]interface{}{
 							"mime_type": mimeType,

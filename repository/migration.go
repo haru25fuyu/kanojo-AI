@@ -74,12 +74,24 @@ func RunMigrations(db *sqlx.DB) {
 		{
 			name: "conversation_topics",
 			sql: `CREATE TABLE IF NOT EXISTS conversation_topics (
-				conversation_id UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-				topic_id        UUID NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
-				summary         TEXT NOT NULL DEFAULT '',
-				date            DATE NOT NULL DEFAULT CURRENT_DATE,
+				conversation_id UUID        NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+				topic_id        UUID        NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+				summary         TEXT        NOT NULL DEFAULT '',
+				embedding       vector(1536),
+				date            DATE        NOT NULL DEFAULT CURRENT_DATE,
 				PRIMARY KEY (conversation_id, topic_id)
 			)`,
+		},
+		{
+			// 既存テーブルへのカラム追加（冪等）
+			name: "conversation_topics add embedding column",
+			sql: `ALTER TABLE conversation_topics
+				ADD COLUMN IF NOT EXISTS embedding vector(1536)`,
+		},
+		{
+			name: "conversation_topics embedding index",
+			sql: `CREATE INDEX IF NOT EXISTS conversation_topics_embedding_idx
+				ON conversation_topics USING hnsw (embedding vector_cosine_ops)`,
 		},
 		{
 			name: "partner_status",
@@ -96,7 +108,6 @@ func RunMigrations(db *sqlx.DB) {
 				PRIMARY KEY (user_id, character_id)
 			)`,
 		},
-
 		{
 			name: "partner_events",
 			sql: `CREATE TABLE IF NOT EXISTS partner_events (
@@ -168,15 +179,13 @@ func RunMigrations(db *sqlx.DB) {
 				value TEXT        NOT NULL
 			)`,
 		},
-		//gemini-3-flash-preview
-		//gemini-3.1-flash-lite
 		{
 			name: "default settings",
 			sql: `INSERT INTO settings (key, value) VALUES
 				('avg_threshold',       '0.38'),
 				('max_threshold',       '0.50'),
 				('topic_threshold',     '0.50'),
-				('model_chat',          'gemini-3.1-flash-lite'),・
+				('model_chat',          'gemini-3-flash-preview'),
 				('model_batch',         'gemini-3.1-flash-lite'),
 				('system_prompt_rule',  'あなたは人間の女性として自然な日常会話をしてください。AIや機械であることを意識させる発言は絶対にしない。専門用語や難しい知識をひけらかさない。日常的な話題に徹する。'),
 				('debug_mode',          'true'),
