@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -20,7 +19,6 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
-	jpholiday "github.com/rabitt1ove/jp-holidays"
 )
 
 type lastConvState struct {
@@ -266,154 +264,115 @@ func main() {
 			}
 		}
 
-		// 5. プロンプトの組み立て
-		var messages []gemini.Message
+		// 5. ステータス・段階・プロンプト組み立て
+		status, _ := repo.GetPartnerStatus()
 
-		// ① 現在時刻
-		messages = append(messages, gemini.Message{
-			Role: "system",
-			Content: func() string {
-				weekdays := []string{"日", "月", "火", "水", "木", "金", "土"}
-				now := time.Now()
-				dayNote := ""
-				wd := now.Weekday()
-				if wd == time.Saturday || wd == time.Sunday {
-					dayNote = "（週末・休日）"
-				} else if name := jpholiday.HolidayName(now); name != "" {
-					dayNote = fmt.Sprintf("（祝日・%s）", name)
+		rawStages, _ := repo.GetCharacterStages(repo.CharacterID)
+		var stagePrompt string
+		if status != nil && len(rawStages) > 0 {
+			entries := make([]gemini.StageEntry, len(rawStages))
+			for i, s := range rawStages {
+				e := gemini.StageEntry{
+					Parameter: s.Parameter,
+					StageFrom: s.StageFrom,
+					StageTo:   s.StageTo,
+					Prompt:    s.Prompt,
 				}
-				return fmt.Sprintf("【現在時刻】%s（%s）%s%s", now.Format("2006/01/02"), weekdays[wd], now.Format("15:04"), dayNote)
-			}(),
-		})
+				if s.FilterParam != nil {
+					e.FilterParam = *s.FilterParam
+					e.FilterFrom = *s.FilterFrom
+					e.FilterTo = *s.FilterTo
+				}
+				entries[i] = e
+			}
+			stagePrompt = gemini.ResolveStagePrompt(entries, map[string]int{
+				"trust":     status.Trust,
+				"affection": status.Affection,
+				"fatigue":   status.Fatigue,
+				"mood":      status.Mood,
+				"stress":    status.Stress,
+				"energy":    status.Energy,
+			})
+		}
 
-		// ② 絶対ルール
-		messages = append(messages, gemini.Message{
-			Role:    "system",
-			Content: rulePrompt,
-		})
-
-		// ③ キャラ設定
-		messages = append(messages, gemini.Message{
-			Role:    "system",
-			Content: charaPrompt,
-		})
-
-		// ④ ユーザー情報をプロンプトに注入（user_profile + 2段階検索）
-		var userInfoText strings.Builder
-		userInfoText.WriteString("【ユーザーについて知っていること】\n")
-
-		// user_profile（コア情報）を優先して入れる
+		var profile *gemini.UserProfile
 		if prof, err := repo.GetUserProfile(); err == nil && prof != nil {
-			if prof.Name != "" {
-				fmt.Fprintf(&userInfoText, "- 名前: %s\n", prof.Name)
-			}
-			if prof.Age != nil {
-				fmt.Fprintf(&userInfoText, "- 年齢: %d\n", *prof.Age)
-			}
-			if prof.Gender != "" {
-				fmt.Fprintf(&userInfoText, "- 性別: %s\n", prof.Gender)
-			}
-			if prof.Job != "" {
-				fmt.Fprintf(&userInfoText, "- 職業: %s\n", prof.Job)
+			profile = &gemini.UserProfile{
+				Name:   prof.Name,
+				Age:    prof.Age,
+				Gender: prof.Gender,
+				Job:    prof.Job,
 			}
 		}
 
-		// user_info（詳細情報）を2段階検索で追加
 		userInfoLimit, _ := strconv.Atoi(repo.GetSetting("user_info_limit", "5"))
 		topUserInfos, _ := repo.GetTopUserInfo(userInfoLimit)
 		searchedInfos, _ := repo.SearchUserInfo(userEmbedding, userInfoLimit)
-
-		userInfoMap := map[string]repository.UserInfo{}
+		seenInfoKeys := map[string]bool{}
+		var userInfoEntries []gemini.UserInfoEntry
 		for _, info := range topUserInfos {
-			userInfoMap[info.Key] = info
+			seenInfoKeys[info.Key] = true
+			userInfoEntries = append(userInfoEntries, gemini.UserInfoEntry{Key: info.Key, Value: info.Value})
 		}
 		for _, info := range searchedInfos {
-			if _, exists := userInfoMap[info.Key]; !exists {
-				userInfoMap[info.Key] = info
+			if !seenInfoKeys[info.Key] {
+				userInfoEntries = append(userInfoEntries, gemini.UserInfoEntry{Key: info.Key, Value: info.Value})
 			}
 		}
-		for _, info := range userInfoMap {
-			fmt.Fprintf(&userInfoText, "- %s: %s\n", info.Key, info.Value)
-		}
 
-		if userInfoText.Len() > len("【ユーザーについて知っていること】\n") {
-			messages = append(messages, gemini.Message{
-				Role:    "system",
-				Content: userInfoText.String(),
-			})
-		}
-
-		// ⑤ 話題の記憶（熱量順＋embedding類似のマージ）
 		topTopics, _ := repo.GetTopTopics(3)
 		searchedTopics, _ := repo.SearchTopicsByEmbedding(userEmbedding, topicT)
-
-		topicMap := map[string]repository.Topic{}
+		topicIDMap := map[string]repository.Topic{}
 		for _, t := range topTopics {
-			topicMap[t.ID] = t
+			topicIDMap[t.ID] = t
 		}
 		for _, t := range searchedTopics {
-			if _, exists := topicMap[t.ID]; !exists {
-				topicMap[t.ID] = t
+			if _, exists := topicIDMap[t.ID]; !exists {
+				topicIDMap[t.ID] = t
 			}
 		}
-		topicSlice := make([]repository.Topic, 0, len(topicMap))
-		for _, t := range topicMap {
+		topicSlice := make([]repository.Topic, 0, len(topicIDMap))
+		for _, t := range topicIDMap {
 			topicSlice = append(topicSlice, t)
 		}
 		topicSlice = repo.FillConvSummaries(topicSlice, userEmbedding)
-
-		if len(topicSlice) > 0 {
-			var memoryText strings.Builder
-			memoryText.WriteString("【あなたが覚えていること】\n")
-			for _, t := range topicSlice {
-				fmt.Fprintf(&memoryText, "- %s（熱量: %.1f）\n", t.Summary, t.Heat)
-				for _, cs := range t.ConvSummaries {
-					fmt.Fprintf(&memoryText, "  - %s\n", cs)
-				}
-			}
-			messages = append(messages, gemini.Message{
-				Role:    "system",
-				Content: memoryText.String(),
+		var topicEntries []gemini.TopicEntry
+		for _, t := range topicSlice {
+			topicEntries = append(topicEntries, gemini.TopicEntry{
+				Summary:       t.Summary,
+				Heat:          t.Heat,
+				ConvSummaries: t.ConvSummaries,
 			})
 		}
 
-		// ⑦ 短期記憶（時刻付き）
-		now := time.Now()
-		for _, mem := range pastMemories {
-			diff := now.Sub(mem.CreatedAt)
-			var timeLabel string
-			switch {
-			case diff < 5*time.Minute:
-				timeLabel = "さっき"
-			case diff < time.Hour:
-				timeLabel = fmt.Sprintf("%d分前", int(diff.Minutes()))
-			case mem.CreatedAt.Format("2006/01/02") == now.Format("2006/01/02"):
-				timeLabel = fmt.Sprintf("今日 %s", mem.CreatedAt.Format("15:04"))
-			case diff < 48*time.Hour:
-				timeLabel = fmt.Sprintf("昨日 %s", mem.CreatedAt.Format("15:04"))
-			case diff < 7*24*time.Hour:
-				timeLabel = fmt.Sprintf("%d日前", int(diff.Hours()/24))
-			default:
-				timeLabel = mem.CreatedAt.Format("1/2")
-			}
-			role := mem.Role
+		var pastMsgs []gemini.PastMessage
+		for _, m := range pastMemories {
+			role := m.Role
 			if role == "proactive" {
 				role = "assistant"
 			}
-			messages = append(messages, gemini.Message{
-				Role:    role,
-				Content: fmt.Sprintf("(%s) %s", timeLabel, mem.Content),
+			pastMsgs = append(pastMsgs, gemini.PastMessage{
+				Role:      role,
+				Content:   m.Content,
+				CreatedAt: m.CreatedAt,
 			})
 		}
 
-		// ⑧ 今回の発言
+		messages := gemini.BuildBaseMessages(gemini.BaseMessagesParams{
+			RulePrompt:   rulePrompt,
+			CharaPrompt:  charaPrompt,
+			StagePrompt:  stagePrompt,
+			Profile:      profile,
+			UserInfos:    userInfoEntries,
+			Topics:       topicEntries,
+			PastMessages: pastMsgs,
+		})
+
 		messages = append(messages, gemini.Message{
 			Role:    "user",
 			Content: userInput,
 		})
 
-		// 6. ステータス取得
-		status, _ := repo.GetPartnerStatus()
 		var statusText string
 		if status != nil {
 			statusText = fmt.Sprintf(
@@ -421,6 +380,13 @@ func main() {
 				status.Affection, status.Trust, status.Fatigue, status.Mood, status.Stress, status.Energy,
 			)
 		}
+
+
+		// ⑧ 今回の発言
+		messages = append(messages, gemini.Message{
+			Role:    "user",
+			Content: userInput,
+		})
 
 		// 7. 生成
 		s.ChannelTyping(m.ChannelID)

@@ -255,6 +255,20 @@ func RunMigrations(db *sqlx.DB) {
 			END;
 			$$ LANGUAGE plpgsql`,
 		},
+		{
+			name: "character_stages",
+			sql: `CREATE TABLE IF NOT EXISTS character_stages (
+        character_id  TEXT  NOT NULL,
+        parameter     TEXT  NOT NULL,
+        stage_from    INT   NOT NULL,
+        stage_to      INT   NOT NULL,
+        prompt        TEXT  NOT NULL DEFAULT '',
+        sort_order    INT   NOT NULL DEFAULT 0,
+        filter_param  TEXT,
+        filter_from   INT,
+        filter_to     INT,
+        PRIMARY KEY (character_id, parameter, stage_from))`,
+		},
 	}
 
 	for _, q := range queries {

@@ -8,7 +8,6 @@ import (
 	"log"
 	"math/rand"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -168,95 +167,78 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 		r.DB().Get(&lastConvID, `SELECT id FROM conversations WHERE character_id = $1 ORDER BY updated_at DESC LIMIT 1`, chara.ID)
 		pastMemories, _ := r.GetRecentMemories(lastConvID, 10)
 
-		// 通常返信と同じプロンプト構造を組み立てる
-		var messages []gemini.Message
-
-		weekdays := []string{"日", "月", "火", "水", "木", "金", "土"}
-		now := time.Now()
-		messages = append(messages, gemini.Message{
-			Role:    "system",
-			Content: fmt.Sprintf("【現在時刻】%s（%s）%s", now.Format("2006/01/02"), weekdays[now.Weekday()], now.Format("15:04")),
-		})
-		messages = append(messages, gemini.Message{
-			Role:    "system",
-			Content: rulePrompt,
-		})
-		messages = append(messages, gemini.Message{
-			Role:    "system",
-			Content: charaPrompt,
-		})
-
-		// ユーザー情報
-		var userInfoText strings.Builder
-		userInfoText.WriteString("【ユーザーについて知っていること】\n")
-
-		// user_profile（コア情報）を優先して入れる
-		if prof, err := r.GetUserProfile(); err == nil && prof != nil {
-			if prof.Name != "" {
-				fmt.Fprintf(&userInfoText, "- 名前: %s\n", prof.Name)
+		rawStages, _ := r.GetCharacterStages(chara.ID)
+		var stagePrompt string
+		if len(rawStages) > 0 {
+			entries := make([]gemini.StageEntry, len(rawStages))
+			for i, s := range rawStages {
+				e := gemini.StageEntry{
+					Parameter: s.Parameter,
+					StageFrom: s.StageFrom,
+					StageTo:   s.StageTo,
+					Prompt:    s.Prompt,
+				}
+				if s.FilterParam != nil {
+					e.FilterParam = *s.FilterParam
+					e.FilterFrom = *s.FilterFrom
+					e.FilterTo = *s.FilterTo
+				}
+				entries[i] = e
 			}
-			if prof.Age != nil {
-				fmt.Fprintf(&userInfoText, "- 年齢: %d\n", *prof.Age)
-			}
-			if prof.Gender != "" {
-				fmt.Fprintf(&userInfoText, "- 性別: %s\n", prof.Gender)
-			}
-			if prof.Job != "" {
-				fmt.Fprintf(&userInfoText, "- 職業: %s\n", prof.Job)
-			}
-		}
-
-		// user_info（詳細情報）を追加
-		userInfoLimit, _ := strconv.Atoi(r.GetSetting("user_info_limit", "5"))
-		topUserInfos, _ := r.GetTopUserInfo(userInfoLimit)
-		for _, info := range topUserInfos {
-			fmt.Fprintf(&userInfoText, "- %s: %s\n", info.Key, info.Value)
-		}
-
-		if userInfoText.Len() > len("【ユーザーについて知っていること】\n") {
-			messages = append(messages, gemini.Message{
-				Role:    "system",
-				Content: userInfoText.String(),
+			stagePrompt = gemini.ResolveStagePrompt(entries, map[string]int{
+				"trust":     status.Trust,
+				"affection": status.Affection,
+				"fatigue":   status.Fatigue,
+				"mood":      status.Mood,
+				"stress":    status.Stress,
+				"energy":    status.Energy,
 			})
 		}
 
-		// 話題の記憶
-		if len(topicTexts) > 0 {
-			var sb strings.Builder
-			sb.WriteString("【あなたが覚えていること】\n")
-			for _, t := range topicTexts {
-				fmt.Fprintf(&sb, "- %s\n", t)
+		var profile *gemini.UserProfile
+		if prof, err := r.GetUserProfile(); err == nil && prof != nil {
+			profile = &gemini.UserProfile{
+				Name:   prof.Name,
+				Age:    prof.Age,
+				Gender: prof.Gender,
+				Job:    prof.Job,
 			}
-			messages = append(messages, gemini.Message{Role: "system", Content: sb.String()})
 		}
 
-		// 短期記憶
-		for _, mem := range pastMemories {
-			role := mem.Role
+		userInfoLimit, _ := strconv.Atoi(r.GetSetting("user_info_limit", "5"))
+		topUserInfos, _ := r.GetTopUserInfo(userInfoLimit)
+		var userInfoEntries []gemini.UserInfoEntry
+		for _, info := range topUserInfos {
+			userInfoEntries = append(userInfoEntries, gemini.UserInfoEntry{Key: info.Key, Value: info.Value})
+		}
+
+		var topicEntries []gemini.TopicEntry
+		for _, t := range topicTexts {
+			topicEntries = append(topicEntries, gemini.TopicEntry{Summary: t})
+		}
+
+		var pastMsgs []gemini.PastMessage
+		for _, m := range pastMemories {
+			role := m.Role
 			if role == "proactive" {
 				role = "assistant"
 			}
-			diff := now.Sub(mem.CreatedAt)
-			var timeLabel string
-			switch {
-			case diff < 5*time.Minute:
-				timeLabel = "さっき"
-			case diff < time.Hour:
-				timeLabel = fmt.Sprintf("%d分前", int(diff.Minutes()))
-			case mem.CreatedAt.Format("2006/01/02") == now.Format("2006/01/02"):
-				timeLabel = fmt.Sprintf("今日 %s", mem.CreatedAt.Format("15:04"))
-			case diff < 48*time.Hour:
-				timeLabel = fmt.Sprintf("昨日 %s", mem.CreatedAt.Format("15:04"))
-			case diff < 7*24*time.Hour:
-				timeLabel = fmt.Sprintf("%d日前", int(diff.Hours()/24))
-			default:
-				timeLabel = mem.CreatedAt.Format("1/2")
-			}
-			messages = append(messages, gemini.Message{
-				Role:    role,
-				Content: fmt.Sprintf("(%s) %s", timeLabel, mem.Content),
+			pastMsgs = append(pastMsgs, gemini.PastMessage{
+				Role:      role,
+				Content:   m.Content,
+				CreatedAt: m.CreatedAt,
 			})
 		}
+
+		messages := gemini.BuildBaseMessages(gemini.BaseMessagesParams{
+			RulePrompt:   rulePrompt,
+			CharaPrompt:  charaPrompt,
+			StagePrompt:  stagePrompt,
+			Profile:      profile,
+			UserInfos:    userInfoEntries,
+			Topics:       topicEntries,
+			PastMessages: pastMsgs,
+		})
 
 		// ユーザー発言の代わりに自発メッセージ用の指示を入れる
 		forceMinutes, _ := strconv.Atoi(repo.GetSetting("proactive_force_minutes", "180"))

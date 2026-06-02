@@ -10,6 +10,7 @@ import (
 type BaseMessagesParams struct {
 	RulePrompt   string
 	CharaPrompt  string
+	StagePrompt  string
 	Profile      *UserProfile
 	UserInfos    []UserInfoEntry
 	Topics       []TopicEntry
@@ -61,6 +62,13 @@ func BuildBaseMessages(p BaseMessagesParams) []Message {
 		Role:    "system",
 		Content: p.CharaPrompt,
 	})
+
+	if p.StagePrompt != "" {
+		messages = append(messages, Message{
+			Role:    "system",
+			Content: p.StagePrompt,
+		})
+	}
 
 	// 現在時刻
 	weekdays := []string{"日", "月", "火", "水", "木", "金", "土"}
@@ -123,17 +131,17 @@ func BuildBaseMessages(p BaseMessagesParams) []Message {
 	}
 
 	// パートナーのイベント
-	if len(p.Events) > 0 {
-		var sb strings.Builder
-		sb.WriteString("【最近あったこと】\n")
-		for _, e := range p.Events {
-			fmt.Fprintf(&sb, "- %s（%s）\n", e.Event, e.CreatedAt.Format("1/2 15:04"))
-		}
-		messages = append(messages, Message{
-			Role:    "system",
-			Content: sb.String(),
-		})
-	}
+	//if len(p.Events) > 0 {
+	//	var sb strings.Builder
+	//	sb.WriteString("【最近あったこと】\n")
+	//	for _, e := range p.Events {
+	//		fmt.Fprintf(&sb, "- %s（%s）\n", e.Event, e.CreatedAt.Format("1/2 15:04"))
+	//	}
+	//	messages = append(messages, Message{
+	//		Role:    "system",
+	//		Content: sb.String(),
+	//	})
+	//}
 
 	// 短期記憶（時刻付き）
 	now = time.Now()
@@ -145,13 +153,15 @@ func BuildBaseMessages(p BaseMessagesParams) []Message {
 			timeLabel = "さっき"
 		case diff < time.Hour:
 			timeLabel = fmt.Sprintf("%d分前", int(diff.Minutes()))
-		case diff < 24*time.Hour:
-			timeLabel = fmt.Sprintf("%d時間前", int(diff.Hours()))
+		case mem.CreatedAt.Format("2006/01/02") == now.Format("2006/01/02"):
+			timeLabel = fmt.Sprintf("今日 %s", mem.CreatedAt.Format("15:04"))
+		case diff < 48*time.Hour:
+			timeLabel = fmt.Sprintf("昨日 %s", mem.CreatedAt.Format("15:04"))
 		case diff < 7*24*time.Hour:
 			timeLabel = fmt.Sprintf("%d日前", int(diff.Hours()/24))
 		default:
-			timeLabel = mem.CreatedAt.Format("1/2")
 		}
+		timeLabel = mem.CreatedAt.Format("1/2")
 		role := mem.Role
 		if role == "proactive" {
 			role = "assistant"
