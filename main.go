@@ -26,9 +26,6 @@ type lastConvState struct {
 	topicID string
 }
 
-// trustGainFor は好感度が信頼度を引き離しているほど、
-// 信頼度が追いつくように速く上がる動的な信頼度増分を返す。
-// （normal返答のときだけ使う想定。short/skipはプリセットのまま）
 func trustGainFor(affection, trust int) int {
 	gain := 1 + (affection-trust)/3000
 	if gain < 0 {
@@ -61,15 +58,14 @@ func main() {
 	repo := repository.NewMemoryRepository(db)
 	repository.RunMigrations(db)
 
-	// クラスター埋め込みを非同期で計算（propensity 判定に使用）
 	functions.InitClusters()
 
 	go functions.RunNightlyBatchLoop(repo)
 
 	activeChars, _ := repo.GetActiveCharacters()
-
 	for _, c := range activeChars {
 		go functions.RunEventLoop(repo, c)
+		go functions.RunInnerStateLoop(repo, c) // 気分テキスト生成（追加）
 	}
 
 	state := &lastConvState{}
@@ -92,7 +88,6 @@ func main() {
 			return
 		}
 
-		// このリクエスト専用のrepo。共有repoは書き換えない（多人数で混ざらないように）
 		r := repo.WithIDs(m.Author.ID, charaID)
 
 		// 1. 設定取得
@@ -114,7 +109,7 @@ func main() {
 		maxT, _ := strconv.ParseFloat(maxTStr, 64)
 		topicT, _ := strconv.ParseFloat(topicTStr, 64)
 
-		// 2. 会話ID取得
+		// 2. 入力処理・埋め込み
 		userInput := m.Content
 		if len(m.Attachments) > 0 && functions.IsImageAttachment(m.Attachments[0].ContentType) {
 			desc, err := gemini.DescribeImage(context.Background(), modelBatch, m.Attachments[0].URL)
@@ -142,7 +137,7 @@ func main() {
 			state.mu.Unlock()
 
 			if isNewConv && prevConvID != "" {
-				// ユーザー情報抽出（非同期）
+				// ユーザー情報・キャラ情報抽出（非同期）
 				go func(cid, mbatch, uid, craid string) {
 					r := repo.WithIDs(uid, craid)
 					memories, err := r.GetRecentMemories(cid, 100)
@@ -151,10 +146,7 @@ func main() {
 					}
 					var lines []gemini.ExtractInfoMemory
 					for _, m := range memories {
-						lines = append(lines, gemini.ExtractInfoMemory{
-							Role:    m.Role,
-							Content: m.Content,
-						})
+						lines = append(lines, gemini.ExtractInfoMemory{Role: m.Role, Content: m.Content})
 					}
 					result, err := gemini.ExtractUserInfo(context.Background(), mbatch, lines)
 					if err != nil || result == nil {
@@ -240,7 +232,6 @@ func main() {
 				}(prevConvID, prevTopicID, modelBatch, m.Author.ID, charaID)
 			}
 
-			// 新規話題のときだけ即時要約
 			if isNewTopic {
 				go func(tid, input, mbatch, uid, craid string) {
 					r := repo.WithIDs(uid, craid)
@@ -273,8 +264,9 @@ func main() {
 			}
 		}
 
-		// 5. ステータス・段階プロンプト組み立て
+		// 5. ステータス・段階プロンプト・内面状態
 		status, _ := r.GetPartnerStatus()
+		innerState, _ := r.GetInnerState() // 気分テキスト（追加）
 
 		rawStages, _ := r.GetCharacterStages(charaID)
 		var stagePrompt string
@@ -305,7 +297,6 @@ func main() {
 		}
 
 		// ── 応答モード判定（propensity）────────────────────────────────────────
-		// skip ならここで LLM を呼ばずに絵文字リアクションだけ付けて終了
 		lastUserEmb, _ := r.GetLastUserEmbedding()
 		lastAIContent, _ := r.GetLastAIMessageContent()
 		propResult := functions.ComputePropensity(functions.PropensityInput{
@@ -332,6 +323,17 @@ func main() {
 		var profile *gemini.UserProfile
 		if prof, err := r.GetUserProfile(); err == nil && prof != nil {
 			profile = &gemini.UserProfile{
+				Name:   prof.Name,
+				Age:    prof.Age,
+				Gender: prof.Gender,
+				Job:    prof.Job,
+			}
+		}
+
+		// キャラクターコアプロフィール（追加）
+		var charaProfile *gemini.CharaProfile
+		if prof, err := r.GetCharaProfile(); err == nil && prof != nil {
+			charaProfile = &gemini.CharaProfile{
 				Name:   prof.Name,
 				Age:    prof.Age,
 				Gender: prof.Gender,
@@ -392,7 +394,7 @@ func main() {
 			})
 		}
 
-		// chara_info retrieval（trust-gated、top-N + cosine 検索のマージ）
+		// chara_info retrieval（trust-gated、top-N + cosine マージ）
 		charaInfoLimit, _ := strconv.Atoi(repo.GetSetting("chara_info_limit", "5"))
 		charaInfoThreshold, _ := strconv.ParseFloat(repo.GetSetting("chara_info_threshold", "0.45"), 64)
 		var charaInfoEntries []gemini.CharaInfoEntry
@@ -401,18 +403,12 @@ func main() {
 			topCharaInfos, _ := r.GetTopCharaInfo(charaInfoLimit, status.Trust)
 			for _, info := range topCharaInfos {
 				seenKeys[info.Key] = true
-				charaInfoEntries = append(charaInfoEntries, gemini.CharaInfoEntry{
-					Key:   info.Key,
-					Value: info.Value,
-				})
+				charaInfoEntries = append(charaInfoEntries, gemini.CharaInfoEntry{Key: info.Key, Value: info.Value})
 			}
 			searchedCharaInfos, _ := r.SearchCharaInfo(userEmbedding, charaInfoLimit, charaInfoThreshold, status.Trust)
 			for _, info := range searchedCharaInfos {
 				if !seenKeys[info.Key] {
-					charaInfoEntries = append(charaInfoEntries, gemini.CharaInfoEntry{
-						Key:   info.Key,
-						Value: info.Value,
-					})
+					charaInfoEntries = append(charaInfoEntries, gemini.CharaInfoEntry{Key: info.Key, Value: info.Value})
 				}
 			}
 		}
@@ -421,6 +417,7 @@ func main() {
 			RulePrompt:   rulePrompt,
 			CharaPrompt:  charaPrompt,
 			StagePrompt:  stagePrompt,
+			CharaProfile: charaProfile, // キャラクターコアプロフィール（追加）
 			CharaInfos:   charaInfoEntries,
 			Profile:      profile,
 			UserInfos:    userInfoEntries,
@@ -428,27 +425,20 @@ func main() {
 			PastMessages: pastMsgs,
 		})
 
-		messages = append(messages, gemini.Message{
-			Role:    "user",
-			Content: userInput,
-		})
+		messages = append(messages, gemini.Message{Role: "user", Content: userInput})
 
-		// mode 別の追加指示（short / dodge）
 		switch propResult.Mode {
 		case functions.ReplyShort:
-			messages = append(messages, gemini.Message{
-				Role:    "system",
-				Content: functions.ShortInstruction(),
-			})
+			messages = append(messages, gemini.Message{Role: "system", Content: functions.ShortInstruction()})
 		case functions.ReplyDodge:
-			messages = append(messages, gemini.Message{
-				Role:    "system",
-				Content: functions.DodgeInstruction(),
-			})
+			messages = append(messages, gemini.Message{Role: "system", Content: functions.DodgeInstruction()})
 		}
 
+		// statusText：mood_text があれば使う（なければ生数値にフォールバック）
 		var statusText string
-		if status != nil {
+		if innerState != nil && innerState.MoodText != "" {
+			statusText = "【今の状態・気分】\n" + innerState.MoodText
+		} else if status != nil {
 			statusText = fmt.Sprintf(
 				"【現在のパートナーステータス】\n好感度:%d 信頼度:%d 疲労度:%d 気分:%d ストレス:%d 活力:%d\nこのステータスに基づいて返答してください。",
 				status.Affection, status.Trust, status.Fatigue, status.Mood, status.Stress, status.Energy,
@@ -479,13 +469,12 @@ func main() {
 			return
 		}
 
-		// propensity が short を決定した場合は delta を short で統一
 		if propResult.Mode == functions.ReplyShort && chatResp.ReplyType != "skip" {
 			chatResp.ReplyType = "short"
 			chatResp.Delta = gemini.GetDeltaPreset("short")
 		}
 
-		// 8. 返信を先に送る（保存は後で goroutine に任せる）
+		// 8. 返信を先に送る
 		debugMode := repo.GetSetting("debug_mode", "false")
 		var reply string
 		if debugMode == "true" && status != nil {
@@ -501,7 +490,7 @@ func main() {
 		s.ChannelMessageSend(m.ChannelID, reply)
 		sendElapsed := time.Since(sendStart)
 
-		// 9. 計測ログを debug_mode 時に Discord に送る
+		// 9. 計測ログ
 		if debugMode == "true" {
 			t := chatResp.Timings
 			timingMsg := fmt.Sprintf(
@@ -521,18 +510,10 @@ func main() {
 			finalDelta.Trust = trustGainFor(status.Affection, status.Trust)
 		}
 
-		go func(
-			input string,
-			inputEmb []float64,
-			response string,
-			cid string,
-			delta repository.StatusDelta,
-		) {
+		go func(input string, inputEmb []float64, response string, cid string, delta repository.StatusDelta) {
 			r.SaveMemory(input, inputEmb, "user", cid)
-
 			aiEmb := gemini.GetEmbedding(response)
 			r.SaveMemory(response, aiEmb, "assistant", cid)
-
 			if err := r.ApplyStatusDelta(delta); err != nil {
 				log.Printf("ステータス更新失敗: %v", err)
 			}

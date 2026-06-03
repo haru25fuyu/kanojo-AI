@@ -45,33 +45,6 @@ func RunEventLoop(repo *repository.MemoryRepository, chara repository.Character)
 		}
 		log.Printf("乱数デルタ適用: fatigue=%d mood=%d stress=%d energy=%d",
 			randomDelta.Fatigue, randomDelta.Mood, randomDelta.Stress, randomDelta.Energy)
-
-		// TODO: イベント生成（整合性の問題で一時無効化）
-		// status, err := r.GetPartnerStatus()
-		// if err != nil {
-		// 	log.Printf("イベント生成: ステータス取得失敗: %v", err)
-		// 	continue
-		// }
-		// modelBatch := r.GetSetting("model_batch", "gemini-3.1-flash-lite")
-		// charaData, _ := r.GetCharacter(chara.ID)
-		// var charaPrompt string
-		// if charaData != nil {
-		// 	charaPrompt = charaData.SystemPrompt
-		// }
-		// result, err := gemini.GenerateEvent(context.Background(), modelBatch,
-		// 	fmt.Sprintf("好感度:%d 信頼度:%d 疲労度:%d 気分:%d ストレス:%d 活力:%d",
-		// 		status.Affection, status.Trust, status.Fatigue, status.Mood, status.Stress, status.Energy),
-		// 	time.Now().Hour(), charaPrompt)
-		// if err != nil || result == nil {
-		// 	log.Printf("イベント生成失敗: %v", err)
-		// 	continue
-		// }
-		// embedding := gemini.GetEmbedding(result.Event)
-		// if err := r.SaveEvent(result.Event, embedding); err != nil {
-		// 	log.Printf("イベント保存失敗: %v", err)
-		// 	continue
-		// }
-		// log.Printf("イベント発生: %s", result.Event)
 	}
 }
 
@@ -119,10 +92,20 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 		if err != nil {
 			continue
 		}
-		statusText := fmt.Sprintf(
-			"【現在のパートナーステータス】\n好感度:%d 信頼度:%d 疲労度:%d 気分:%d ストレス:%d 活力:%d\nこのステータスに基づいて返答してください。",
-			status.Affection, status.Trust, status.Fatigue, status.Mood, status.Stress, status.Energy,
-		)
+
+		// 内面状態（気分テキスト）取得（追加）
+		innerState, _ := r.GetInnerState()
+
+		// statusText：mood_text があれば使う（なければ生数値にフォールバック）
+		var statusText string
+		if innerState != nil && innerState.MoodText != "" {
+			statusText = "【今の状態・気分】\n" + innerState.MoodText
+		} else {
+			statusText = fmt.Sprintf(
+				"【現在のパートナーステータス】\n好感度:%d 信頼度:%d 疲労度:%d 気分:%d ストレス:%d 活力:%d\nこのステータスに基づいて返答してください。",
+				status.Affection, status.Trust, status.Fatigue, status.Mood, status.Stress, status.Energy,
+			)
+		}
 
 		hotTopics, _ := r.GetTopTopics(3)
 		hotTopics = r.FillConvSummaries(hotTopics, nil)
@@ -158,7 +141,7 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 			now.Format("15:04"), lastMsgLabel, elapsedText, elapsedText,
 		)
 
-		// ── 2-1: chara_info retrieval（trust-gated、proactiveはtop-Nのみ）────────
+		// chara_info retrieval（trust-gated、proactive は top-N のみ）
 		charaInfoLimit, _ := strconv.Atoi(repo.GetSetting("chara_info_limit", "5"))
 		var charaInfoEntries []gemini.CharaInfoEntry
 		if status != nil {
@@ -172,7 +155,6 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 		}
 
 		hour := time.Now().Hour()
-
 		modelChat := repo.GetSetting("model_chat", "gemini-3-flash-preview")
 		rulePrompt := r.GetSetting("system_prompt_rule", "日常会話に徹してください。")
 		charaPrompt := chara.SystemPrompt
@@ -233,6 +215,17 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 			}
 		}
 
+		// キャラクターコアプロフィール（追加）
+		var charaProfile *gemini.CharaProfile
+		if prof, err := r.GetCharaProfile(); err == nil && prof != nil {
+			charaProfile = &gemini.CharaProfile{
+				Name:   prof.Name,
+				Age:    prof.Age,
+				Gender: prof.Gender,
+				Job:    prof.Job,
+			}
+		}
+
 		userInfoLimit, _ := strconv.Atoi(r.GetSetting("user_info_limit", "5"))
 		topUserInfos, _ := r.GetTopUserInfo(userInfoLimit)
 		var userInfoEntries []gemini.UserInfoEntry
@@ -262,6 +255,7 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 			RulePrompt:   rulePrompt,
 			CharaPrompt:  charaPrompt,
 			StagePrompt:  stagePrompt,
+			CharaProfile: charaProfile, // キャラクターコアプロフィール（追加）
 			CharaInfos:   charaInfoEntries,
 			Profile:      profile,
 			UserInfos:    userInfoEntries,

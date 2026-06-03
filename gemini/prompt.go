@@ -17,6 +17,14 @@ type BaseMessagesParams struct {
 	Topics       []TopicEntry
 	Events       []EventEntry
 	PastMessages []PastMessage
+	CharaProfile *CharaProfile
+}
+
+type CharaProfile struct {
+	Name   string
+	Age    *int
+	Gender string
+	Job    string
 }
 
 type UserProfile struct {
@@ -76,6 +84,28 @@ func BuildBaseMessages(p BaseMessagesParams) []Message {
 			Role:    "system",
 			Content: p.StagePrompt,
 		})
+	}
+
+	if p.CharaProfile != nil {
+		var parts []string
+		if p.CharaProfile.Name != "" {
+			parts = append(parts, "名前: "+p.CharaProfile.Name)
+		}
+		if p.CharaProfile.Age != nil {
+			parts = append(parts, fmt.Sprintf("年齢: %d歳", *p.CharaProfile.Age))
+		}
+		if p.CharaProfile.Gender != "" {
+			parts = append(parts, "性別: "+p.CharaProfile.Gender)
+		}
+		if p.CharaProfile.Job != "" {
+			parts = append(parts, "職業: "+p.CharaProfile.Job)
+		}
+		if len(parts) > 0 {
+			messages = append(messages, Message{
+				Role:    "system",
+				Content: "【このキャラクターの基本情報】\n- " + strings.Join(parts, "\n- "),
+			})
+		}
 	}
 
 	// キャラクター固有情報（retrieval、trust-gated）

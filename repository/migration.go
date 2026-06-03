@@ -273,6 +273,28 @@ func RunMigrations(db *sqlx.DB) {
         filter_to     INT,
         PRIMARY KEY (character_id, parameter, stage_from))`,
 		},
+		{
+			name: "chara_profile",
+			sql: `CREATE TABLE IF NOT EXISTS chara_profile (
+        character_id TEXT        PRIMARY KEY,
+        name         TEXT        NOT NULL DEFAULT '',
+        age          INT,
+        gender       TEXT        NOT NULL DEFAULT '',
+        job          TEXT        NOT NULL DEFAULT '',
+        updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+		},
+		{
+			name: "inner_state",
+			sql: `CREATE TABLE IF NOT EXISTS inner_state (
+        character_id   TEXT        PRIMARY KEY,
+        mood_text      TEXT        NOT NULL DEFAULT '',
+        mood_at_gen    INT         NOT NULL DEFAULT 0,
+        stress_at_gen  INT         NOT NULL DEFAULT 0,
+        next_run_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+		},
 	}
 
 	for _, q := range queries {

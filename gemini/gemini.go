@@ -687,3 +687,73 @@ func GetChatResponseWithImage(ctx context.Context, model string, messages []Mess
 		Timings:   ResponseTimings{GeminiAPI: apiElapsed, Total: time.Since(totalStart)},
 	}, nil
 }
+
+// ─── gemini/gemini.go または gemini/ 内の新規ファイルに追加 ─────────────────
+
+// MoodTextResult は GenerateMoodText の出力
+type MoodTextResult struct {
+	MoodText string `json:"mood"`
+}
+
+// GenerateMoodText はキャラクターの現在の気分を「地＋表層」1文で生成する。
+// 周期ループ・変化率トリガー両方で呼ぶ。
+//
+// 出力例:
+//
+//	"根は強く好意があるが、今日は疲れ気味で少し素っ気なくなりがち"
+func GenerateMoodText(
+	ctx context.Context,
+	model string,
+	charaPrompt string,
+	statusStr string,
+	hour int,
+) (*MoodTextResult, error) {
+	schema := `{"mood": "好感度・信頼度（関係の地・ゆっくり変化）と気分・ストレス・活力（今日の表層・速く変化）を合わせた1文。例: 根は強く好意があるが今日は疲れ気味で少し素っ気なくなりがち"}`
+
+	systemContent := charaPrompt + `
+
+あなたはこのキャラクターの現在の気分・内面状態を1文で生成するAIです。
+現在の時間帯：` + innerTimeOfDay(hour) + `
+` + jsonOutputInstruction + `
+
+以下のJSONのみを返してください：
+` + schema
+
+	messages := []Message{
+		{Role: "system", Content: systemContent},
+		{Role: "user", Content: "現在のステータス：" + statusStr},
+	}
+
+	rawResponse, err := GetChatResponseWithContext(ctx, model, messages, jsonConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	rawResponse = strings.TrimSpace(rawResponse)
+	start := strings.Index(rawResponse, "{")
+	end := strings.LastIndex(rawResponse, "}")
+	if start == -1 || end == -1 {
+		return nil, fmt.Errorf("JSONが見つかりません")
+	}
+
+	var result MoodTextResult
+	if err := json.Unmarshal([]byte(rawResponse[start:end+1]), &result); err != nil {
+		return nil, fmt.Errorf("パース失敗: %w", err)
+	}
+	return &result, nil
+}
+
+func innerTimeOfDay(hour int) string {
+	switch {
+	case hour >= 5 && hour < 10:
+		return "朝"
+	case hour >= 10 && hour < 14:
+		return "昼"
+	case hour >= 14 && hour < 18:
+		return "夕方"
+	case hour >= 18 && hour < 22:
+		return "夜"
+	default:
+		return "深夜"
+	}
+}
