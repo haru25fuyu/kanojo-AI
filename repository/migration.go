@@ -143,6 +143,10 @@ func RunMigrations(db *sqlx.DB) {
 				ON user_info USING hnsw (embedding vector_cosine_ops)`,
 		},
 		{
+			name: "chara_info add min_trust",
+			sql:  `ALTER TABLE chara_info ADD COLUMN IF NOT EXISTS min_trust INT NOT NULL DEFAULT 0`,
+		},
+		{
 			name: "chara_info",
 			sql: `CREATE TABLE IF NOT EXISTS chara_info (
 				character_id  TEXT        NOT NULL,

@@ -367,6 +367,31 @@ func main() {
 			})
 		}
 
+		// chara_info retrieval（trust-gated、top-N + cosine 検索のマージ）
+		charaInfoLimit, _ := strconv.Atoi(repo.GetSetting("chara_info_limit", "5"))
+		charaInfoThreshold, _ := strconv.ParseFloat(repo.GetSetting("chara_info_threshold", "0.45"), 64)
+		var charaInfoEntries []gemini.CharaInfoEntry
+		if status != nil {
+			seenKeys := map[string]bool{}
+			topCharaInfos, _ := r.GetTopCharaInfo(charaInfoLimit, status.Trust)
+			for _, info := range topCharaInfos {
+				seenKeys[info.Key] = true
+				charaInfoEntries = append(charaInfoEntries, gemini.CharaInfoEntry{
+					Key:   info.Key,
+					Value: info.Value,
+				})
+			}
+			searchedCharaInfos, _ := r.SearchCharaInfo(userEmbedding, charaInfoLimit, charaInfoThreshold, status.Trust)
+			for _, info := range searchedCharaInfos {
+				if !seenKeys[info.Key] {
+					charaInfoEntries = append(charaInfoEntries, gemini.CharaInfoEntry{
+						Key:   info.Key,
+						Value: info.Value,
+					})
+				}
+			}
+		}
+
 		messages := gemini.BuildBaseMessages(gemini.BaseMessagesParams{
 			RulePrompt:   rulePrompt,
 			CharaPrompt:  charaPrompt,

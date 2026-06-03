@@ -94,7 +94,8 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 			continue
 		}
 
-		elapsed := time.Since(lastUserTime)
+		now := time.Now()
+		elapsed := now.Sub(lastUserTime)
 		log.Printf("自発メッセージ: 最終ユーザー発言から%s経過", elapsed.Round(time.Minute))
 
 		minElapsed, _ := strconv.Atoi(repo.GetSetting("proactive_min_elapsed", "60"))
@@ -142,6 +143,32 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 			elapsedText = fmt.Sprintf("%.0f時間", elapsed.Hours())
 		default:
 			elapsedText = fmt.Sprintf("%.0f日", elapsed.Hours()/24)
+		}
+
+		var lastMsgLabel string
+		if lastUserTime.Format("2006/01/02") == now.Format("2006/01/02") {
+			lastMsgLabel = "今日" + lastUserTime.Format("15:04")
+		} else if lastUserTime.Format("2006/01/02") == now.AddDate(0, 0, -1).Format("2006/01/02") {
+			lastMsgLabel = "昨日" + lastUserTime.Format("15:04")
+		} else {
+			lastMsgLabel = lastUserTime.Format("01/02 15:04")
+		}
+		timeConstraint := fmt.Sprintf(
+			"（現在 %s / 前回会話: %s / %s経過。この%s間に自然に起きた範囲の出来事だけが語れる事実）\n",
+			now.Format("15:04"), lastMsgLabel, elapsedText, elapsedText,
+		)
+
+		// ── 2-1: chara_info retrieval（trust-gated、proactiveはtop-Nのみ）────────
+		charaInfoLimit, _ := strconv.Atoi(repo.GetSetting("chara_info_limit", "5"))
+		var charaInfoEntries []gemini.CharaInfoEntry
+		if status != nil {
+			topCharaInfos, _ := r.GetTopCharaInfo(charaInfoLimit, status.Trust)
+			for _, info := range topCharaInfos {
+				charaInfoEntries = append(charaInfoEntries, gemini.CharaInfoEntry{
+					Key:   info.Key,
+					Value: info.Value,
+				})
+			}
 		}
 
 		hour := time.Now().Hour()
@@ -235,6 +262,7 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 			RulePrompt:   rulePrompt,
 			CharaPrompt:  charaPrompt,
 			StagePrompt:  stagePrompt,
+			CharaInfos:   charaInfoEntries,
 			Profile:      profile,
 			UserInfos:    userInfoEntries,
 			Topics:       topicEntries,
@@ -249,31 +277,32 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 		var proactiveInstruction string
 		switch {
 		case forceSend:
-			proactiveInstruction = fmt.Sprintf(
+			proactiveInstruction = timeConstraint + fmt.Sprintf(
 				"（%s以上連絡がなかった。必ず話しかけてください）",
 				elapsedText,
 			)
 		case elapsed < 3*minElapsedDur:
-			proactiveInstruction = fmt.Sprintf(
+			proactiveInstruction = timeConstraint + fmt.Sprintf(
 				"（%s連絡がなかった。話しかけたい気持ちがあれば、自分の近況や気になったことを交えつつユーザーへの質問を含めて話しかけて。特に理由がなければskipでもいい）",
 				elapsedText,
 			)
 		case elapsed < 8*minElapsedDur:
-			proactiveInstruction = fmt.Sprintf(
+			proactiveInstruction = timeConstraint + fmt.Sprintf(
 				"（%s連絡がなかった。今日あったことを少し話しつつユーザーの様子も聞いて。疲れてたり気分が乗らなければskipでいい）",
 				elapsedText,
 			)
 		case elapsed < 24*minElapsedDur:
-			proactiveInstruction = fmt.Sprintf(
+			proactiveInstruction = timeConstraint + fmt.Sprintf(
 				"（%s連絡がなかった。寂しかった気持ちを出しつつユーザーの様子を聞いて。ステータス次第でskipもあり）",
 				elapsedText,
 			)
 		default:
-			proactiveInstruction = fmt.Sprintf(
+			proactiveInstruction = timeConstraint + fmt.Sprintf(
 				"（%s以上連絡がなかった。久しぶりで心配してる、近況を聞いて）",
 				elapsedText,
 			)
 		}
+
 		messages = append(messages, gemini.Message{
 			Role:    "user",
 			Content: proactiveInstruction,

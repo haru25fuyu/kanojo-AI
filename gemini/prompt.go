@@ -9,8 +9,9 @@ import (
 // BaseMessagesParams はプロンプト組み立てに必要なデータをまとめた構造体
 type BaseMessagesParams struct {
 	RulePrompt   string
-	CharaPrompt  string
+	CharaPrompt  string // 人格・声のみ（事実・背景は CharaInfos 側に移す）
 	StagePrompt  string
+	CharaInfos   []CharaInfoEntry // キャラクター固有情報（retrieval、trust-gated）
 	Profile      *UserProfile
 	UserInfos    []UserInfoEntry
 	Topics       []TopicEntry
@@ -23,6 +24,12 @@ type UserProfile struct {
 	Age    *int
 	Gender string
 	Job    string
+}
+
+// CharaInfoEntry はキャラクターの事実・背景情報（retrieval で取得した項目）
+type CharaInfoEntry struct {
+	Key   string
+	Value string
 }
 
 type UserInfoEntry struct {
@@ -57,16 +64,33 @@ func BuildBaseMessages(p BaseMessagesParams) []Message {
 		Content: p.RulePrompt,
 	})
 
-	// キャラ設定（statusはGetChatResponseWithStatusがここに追記する）
+	// キャラ設定（人格・声のみ。職業・出身地等の事実は CharaInfos から retrieval）
 	messages = append(messages, Message{
 		Role:    "system",
 		Content: p.CharaPrompt,
 	})
 
+	// 段階プロンプト（trust/affection ゲート）
 	if p.StagePrompt != "" {
 		messages = append(messages, Message{
 			Role:    "system",
 			Content: p.StagePrompt,
+		})
+	}
+
+	// キャラクター固有情報（retrieval、trust-gated）
+	// 職業・出身・習慣などの事実、および背景（なぜそうなったか）を受け取る。
+	// CharaPrompt には人格・声のみ残し、事実はここで渡すことで
+	// 「仕事話が常に前景化する」問題を構造的に防ぐ。
+	if len(p.CharaInfos) > 0 {
+		var sb strings.Builder
+		sb.WriteString("【このキャラクターについて】\n")
+		for _, info := range p.CharaInfos {
+			fmt.Fprintf(&sb, "- %s: %s\n", info.Key, info.Value)
+		}
+		messages = append(messages, Message{
+			Role:    "system",
+			Content: sb.String(),
 		})
 	}
 
@@ -130,7 +154,7 @@ func BuildBaseMessages(p BaseMessagesParams) []Message {
 		})
 	}
 
-	// パートナーのイベント
+	// パートナーのイベント（時間しばり + シフト対応後に有効化予定）
 	//if len(p.Events) > 0 {
 	//	var sb strings.Builder
 	//	sb.WriteString("【最近あったこと】\n")
