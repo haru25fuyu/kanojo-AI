@@ -160,8 +160,8 @@ func BuildBaseMessages(p BaseMessagesParams) []Message {
 		case diff < 7*24*time.Hour:
 			timeLabel = fmt.Sprintf("%d日前", int(diff.Hours()/24))
 		default:
+			timeLabel = mem.CreatedAt.Format("1/2")
 		}
-		timeLabel = mem.CreatedAt.Format("1/2")
 		role := mem.Role
 		if role == "proactive" {
 			role = "assistant"

@@ -39,13 +39,6 @@ var deltaPresets = map[string]StatusDelta{
 	"skip":   {Affection: -3, Trust: -2, Fatigue: 3, Mood: -8, Stress: 6, Energy: -2},
 }
 
-// ── thinkingConfig プリセット ──────────────────────────
-
-// fastConfig: 会話返答用。thinkingオフで最速。
-var fastConfig = map[string]interface{}{
-	"thinkingConfig": map[string]interface{}{"thinkingBudget": 0},
-}
-
 // jsonConfig: JSON抽出用。thinking 0 から始める（精度荒れたら256に上げる）。
 var jsonConfig = map[string]interface{}{
 	"thinkingConfig":   map[string]interface{}{"thinkingBudget": 0},
@@ -87,6 +80,23 @@ type ResponseTimings struct {
 
 type EventResponse struct {
 	Event string `json:"event"`
+}
+
+func buildFastConfig(n int) map[string]interface{} {
+	tc := map[string]interface{}{}
+	switch n {
+	case 1:
+		tc["thinkingLevel"] = "minimal"
+	case 2:
+		tc["thinkingLevel"] = "low"
+	case 3:
+		tc["thinkingLevel"] = "medium"
+	case 4:
+		tc["thinkingLevel"] = "high"
+	default: // 0・不正値 = オフ
+		tc["thinkingBudget"] = 0
+	}
+	return map[string]interface{}{"thinkingConfig": tc}
 }
 
 // buildPayload はメッセージとオプションの generationConfig から Gemini API ペイロードを組み立てる。
@@ -224,7 +234,7 @@ func GetEmbedding(text string) []float64 {
 // GetChatResponseWithStatus は会話返答を生成する。
 // thinkingBudget: 0 の fastConfig を使って最速で返す。
 // ChatResponse.Timings に各ステップの計測結果を含める。
-func GetChatResponseWithStatus(ctx context.Context, model string, messages []Message, status string) (*ChatResponse, error) {
+func GetChatResponseWithStatus(ctx context.Context, model string, messages []Message, status string, thinkingBudget int) (*ChatResponse, error) {
 	totalStart := time.Now()
 
 	augmented := append([]Message{}, messages...)
@@ -243,9 +253,8 @@ func GetChatResponseWithStatus(ctx context.Context, model string, messages []Mes
 
 	// ── Gemini API 呼び出し（thinkingオフ） ──
 	apiStart := time.Now()
-	rawResponse, err := GetChatResponseWithContext(ctx, model, augmented, fastConfig)
+	rawResponse, err := GetChatResponseWithContext(ctx, model, augmented, buildFastConfig(thinkingBudget))
 	apiElapsed := time.Since(apiStart)
-
 	if err != nil {
 		log.Printf("GetChatResponseWithContext失敗: %v", err)
 		return nil, err
@@ -548,7 +557,7 @@ func DescribeImage(ctx context.Context, model string, imageURL string) (string, 
 // GetChatResponseWithImage は画像付き会話の返答を生成する。
 // thinkingBudget: 0 の fastConfig を適用。
 // ResponseTimings に画像DL時間・API呼び出し時間を含める。
-func GetChatResponseWithImage(ctx context.Context, model string, messages []Message, imageURL string, statusText string) (*ChatResponse, error) {
+func GetChatResponseWithImage(ctx context.Context, model string, messages []Message, imageURL string, statusText string, thinkingBudget int) (*ChatResponse, error) {
 	totalStart := time.Now()
 
 	apiKey := os.Getenv("GEMINI_API_KEY")
@@ -622,7 +631,7 @@ func GetChatResponseWithImage(ctx context.Context, model string, messages []Mess
 		payload["system_instruction"] = map[string]interface{}{"parts": systemParts}
 	}
 	// thinking オフ
-	payload["generationConfig"] = fastConfig
+	payload["generationConfig"] = buildFastConfig(thinkingBudget)
 
 	// API呼び出し
 	apiStart := time.Now()

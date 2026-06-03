@@ -27,6 +27,17 @@ type lastConvState struct {
 	topicID string
 }
 
+// trustGainFor は好感度が信頼度を引き離しているほど、
+// 信頼度が追いつくように速く上がる動的な信頼度増分を返す。
+// （normal返答のときだけ使う想定。short/skipはプリセットのまま）
+func trustGainFor(affection, trust int) int {
+	gain := 1 + (affection-trust)/3000
+	if gain < 0 {
+		gain = 0 // 信頼度が好感度を追い越した時は据え置き
+	}
+	return gain
+}
+
 func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Println(".envファイルが見つかりません（環境変数から読み込みます）")
@@ -79,15 +90,15 @@ func main() {
 			return
 		}
 
-		repo.UserID = m.Author.ID
-		repo.CharacterID = charaID
+		// このリクエスト専用のrepo。共有repoは書き換えない（多人数で混ざらないように）
+		r := repo.WithIDs(m.Author.ID, charaID)
 
-		// 1. 設定取得
+		// 1. 設定取得（GetSettingはID不要なのでrepoのまま）
 		avgTStr := repo.GetSetting("avg_threshold", "0.38")
 		maxTStr := repo.GetSetting("max_threshold", "0.50")
 		topicTStr := repo.GetSetting("topic_threshold", "0.50")
 		rulePrompt := repo.GetSetting("system_prompt_rule", "日常会話に徹してください。")
-		chara, err := repo.GetCharacter(repo.CharacterID)
+		chara, err := r.GetCharacter(charaID)
 		var charaPrompt string
 		if err != nil || chara == nil {
 			charaPrompt = "あなたは親しみやすい女性です。"
@@ -110,16 +121,16 @@ func main() {
 			}
 		}
 		userEmbedding := gemini.GetEmbedding(userInput)
-		convID, isNewConv, _ := repo.GetOrCreateConversationID(userEmbedding, avgT, maxT)
+		convID, isNewConv, _ := r.GetOrCreateConversationID(userEmbedding, avgT, maxT)
 
 		// 3. 話題に紐づける
-		topicID, isNewTopic, err := repo.GetOrCreateTopic(userEmbedding, topicT)
+		topicID, isNewTopic, err := r.GetOrCreateTopic(userEmbedding, topicT)
 		if err != nil {
 			log.Printf("話題取得失敗: %v", err)
 		} else {
-			repo.LinkConversationToTopic(convID, topicID)
-			repo.IncrementHeat(topicID)
-			repo.UpdateTopicEmbedding(topicID, userEmbedding)
+			r.LinkConversationToTopic(convID, topicID)
+			r.IncrementHeat(topicID)
+			r.UpdateTopicEmbedding(topicID, userEmbedding)
 
 			state.mu.Lock()
 			prevConvID := state.convID
@@ -184,11 +195,11 @@ func main() {
 						}
 					}
 					log.Printf("情報抽出完了: ユーザー%d件 キャラ%d件", len(result.UserInfo), len(result.CharaInfo))
-				}(prevConvID, modelBatch, repo.UserID, repo.CharacterID)
+				}(prevConvID, modelBatch, m.Author.ID, charaID)
 
 				// スケジュール抽出（非同期）
-				go func(cid, mbatch, uid string) {
-					r := repo.WithIDs(uid, repo.CharacterID)
+				go func(cid, mbatch, uid, craid string) {
+					r := repo.WithIDs(uid, craid)
 					memories, err := r.GetRecentMemories(cid, 100)
 					if err != nil || len(memories) == 0 {
 						return
@@ -216,7 +227,7 @@ func main() {
 						}
 					}
 					log.Printf("スケジュール抽出完了: %d件", len(items))
-				}(prevConvID, modelBatch, repo.UserID)
+				}(prevConvID, modelBatch, m.Author.ID, charaID)
 
 				// 会話要約（非同期）
 				go func(cid, tid, mbatch, uid, craid string) {
@@ -226,15 +237,13 @@ func main() {
 					} else {
 						log.Printf("conversation[%s]要約完了", cid)
 					}
-				}(prevConvID, prevTopicID, modelBatch, repo.UserID, repo.CharacterID)
+				}(prevConvID, prevTopicID, modelBatch, m.Author.ID, charaID)
 			}
 
 			// 新規話題のときだけ即時要約
 			if isNewTopic {
-				go func(tid, input, mbatch, craid string) {
-					r := &repository.MemoryRepository{}
-					*r = *repo
-					r.CharacterID = craid
+				go func(tid, input, mbatch, uid, craid string) {
+					r := repo.WithIDs(uid, craid)
 					memories := []repository.Memory{{Role: "user", Content: input}}
 					assessment, err := repository.AssessTopic(context.Background(), mbatch, memories)
 					if err != nil || assessment == nil {
@@ -242,12 +251,12 @@ func main() {
 					}
 					r.UpdateTopic(tid, assessment.Keywords, assessment.Summary, assessment.HeatScore*10.0)
 					log.Printf("新規話題[%s]即時要約完了: %s %v", tid, assessment.Summary, assessment.Keywords)
-				}(topicID, userInput, modelBatch, repo.CharacterID)
+				}(topicID, userInput, modelBatch, m.Author.ID, charaID)
 			}
 		}
 
 		// 4. 短期記憶の取得
-		pastMemories, _ := repo.GetRecentMemories(convID, 10)
+		pastMemories, _ := r.GetRecentMemories(convID, 10)
 		if len(pastMemories) == 10 {
 			allSameConv := true
 			for _, m := range pastMemories {
@@ -257,7 +266,7 @@ func main() {
 				}
 			}
 			if allSameConv {
-				allMemories, err := repo.GetAllMemoriesInConversation(convID)
+				allMemories, err := r.GetAllMemoriesInConversation(convID)
 				if err == nil && len(allMemories) > 10 {
 					pastMemories = allMemories
 				}
@@ -265,9 +274,9 @@ func main() {
 		}
 
 		// 5. ステータス・段階・プロンプト組み立て
-		status, _ := repo.GetPartnerStatus()
+		status, _ := r.GetPartnerStatus()
 
-		rawStages, _ := repo.GetCharacterStages(repo.CharacterID)
+		rawStages, _ := r.GetCharacterStages(charaID)
 		var stagePrompt string
 		if status != nil && len(rawStages) > 0 {
 			entries := make([]gemini.StageEntry, len(rawStages))
@@ -296,7 +305,7 @@ func main() {
 		}
 
 		var profile *gemini.UserProfile
-		if prof, err := repo.GetUserProfile(); err == nil && prof != nil {
+		if prof, err := r.GetUserProfile(); err == nil && prof != nil {
 			profile = &gemini.UserProfile{
 				Name:   prof.Name,
 				Age:    prof.Age,
@@ -306,8 +315,8 @@ func main() {
 		}
 
 		userInfoLimit, _ := strconv.Atoi(repo.GetSetting("user_info_limit", "5"))
-		topUserInfos, _ := repo.GetTopUserInfo(userInfoLimit)
-		searchedInfos, _ := repo.SearchUserInfo(userEmbedding, userInfoLimit)
+		topUserInfos, _ := r.GetTopUserInfo(userInfoLimit)
+		searchedInfos, _ := r.SearchUserInfo(userEmbedding, userInfoLimit)
 		seenInfoKeys := map[string]bool{}
 		var userInfoEntries []gemini.UserInfoEntry
 		for _, info := range topUserInfos {
@@ -320,8 +329,8 @@ func main() {
 			}
 		}
 
-		topTopics, _ := repo.GetTopTopics(3)
-		searchedTopics, _ := repo.SearchTopicsByEmbedding(userEmbedding, topicT)
+		topTopics, _ := r.GetTopTopics(3)
+		searchedTopics, _ := r.SearchTopicsByEmbedding(userEmbedding, topicT)
 		topicIDMap := map[string]repository.Topic{}
 		for _, t := range topTopics {
 			topicIDMap[t.ID] = t
@@ -335,7 +344,7 @@ func main() {
 		for _, t := range topicIDMap {
 			topicSlice = append(topicSlice, t)
 		}
-		topicSlice = repo.FillConvSummaries(topicSlice, userEmbedding)
+		topicSlice = r.FillConvSummaries(topicSlice, userEmbedding)
 		var topicEntries []gemini.TopicEntry
 		for _, t := range topicSlice {
 			topicEntries = append(topicEntries, gemini.TopicEntry{
@@ -381,21 +390,16 @@ func main() {
 			)
 		}
 
-
-		// ⑧ 今回の発言
-		messages = append(messages, gemini.Message{
-			Role:    "user",
-			Content: userInput,
-		})
+		thinkingBudget, _ := strconv.Atoi(repo.GetSetting("chat_thinking_level", "0"))
 
 		// 7. 生成
 		s.ChannelTyping(m.ChannelID)
 		reqStart := time.Now()
 		var chatResp *gemini.ChatResponse
 		if len(m.Attachments) > 0 && functions.IsImageAttachment(m.Attachments[0].ContentType) {
-			chatResp, err = gemini.GetChatResponseWithImage(context.Background(), modelChat, messages, m.Attachments[0].URL, statusText)
+			chatResp, err = gemini.GetChatResponseWithImage(context.Background(), modelChat, messages, m.Attachments[0].URL, statusText, thinkingBudget)
 		} else {
-			chatResp, err = gemini.GetChatResponseWithStatus(context.Background(), modelChat, messages, statusText)
+			chatResp, err = gemini.GetChatResponseWithStatus(context.Background(), modelChat, messages, statusText, thinkingBudget)
 		}
 		if err != nil || chatResp == nil {
 			log.Printf("GetChatResponseWithStatus失敗: %v", err)
@@ -436,7 +440,15 @@ func main() {
 			go s.ChannelMessageSend(m.ChannelID, timingMsg)
 		}
 
-		// 10. 保存・ステータス更新を goroutine に逃がす
+		// 10. ステータス変動を確定してから保存・更新を goroutine に逃がす
+		//   - Affection += 1 は元のまま（意図不明なので残置）
+		//   - 信頼度は normal のときだけ「好感度との差」で加速させる
+		finalDelta := repository.StatusDelta(chatResp.Delta)
+		finalDelta.Affection += 1
+		if chatResp.ReplyType == "normal" && status != nil {
+			finalDelta.Trust = trustGainFor(status.Affection, status.Trust)
+		}
+
 		go func(
 			input string,
 			inputEmb []float64,
@@ -444,16 +456,15 @@ func main() {
 			cid string,
 			delta repository.StatusDelta,
 		) {
-			repo.SaveMemory(input, inputEmb, "user", cid)
+			r.SaveMemory(input, inputEmb, "user", cid)
 
 			aiEmb := gemini.GetEmbedding(response)
-			repo.SaveMemory(response, aiEmb, "assistant", cid)
+			r.SaveMemory(response, aiEmb, "assistant", cid)
 
-			delta.Affection += 1
-			if err := repo.ApplyStatusDelta(delta); err != nil {
+			if err := r.ApplyStatusDelta(delta); err != nil {
 				log.Printf("ステータス更新失敗: %v", err)
 			}
-		}(userInput, userEmbedding, aiResponse, convID, repository.StatusDelta(chatResp.Delta))
+		}(userInput, userEmbedding, aiResponse, convID, finalDelta)
 	})
 
 	if err = dg.Open(); err != nil {

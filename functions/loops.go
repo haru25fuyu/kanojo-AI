@@ -192,6 +192,7 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 				"mood":      status.Mood,
 				"stress":    status.Stress,
 				"energy":    status.Energy,
+				"proactive": status.Trust,
 			})
 		}
 
@@ -278,7 +279,9 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 			Content: proactiveInstruction,
 		})
 
-		chatResp, err := gemini.GetChatResponseWithStatus(context.Background(), modelChat, messages, statusText)
+		thinkingBudget, _ := strconv.Atoi(repo.GetSetting("chat_thinking_budget", "0"))
+
+		chatResp, err := gemini.GetChatResponseWithStatus(context.Background(), modelChat, messages, statusText, thinkingBudget)
 		if err != nil || chatResp == nil {
 			log.Printf("自発メッセージ生成失敗: %v", err)
 			continue
