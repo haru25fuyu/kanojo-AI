@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"go_app/functions"
 	"go_app/gemini"
 	"go_app/repository"
 	"log"
@@ -12,8 +13,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"go_app/functions"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/jmoiron/sqlx"
@@ -33,7 +32,7 @@ type lastConvState struct {
 func trustGainFor(affection, trust int) int {
 	gain := 1 + (affection-trust)/3000
 	if gain < 0 {
-		gain = 0 // 信頼度が好感度を追い越した時は据え置き
+		gain = 0
 	}
 	return gain
 }
@@ -61,6 +60,9 @@ func main() {
 
 	repo := repository.NewMemoryRepository(db)
 	repository.RunMigrations(db)
+
+	// クラスター埋め込みを非同期で計算（propensity 判定に使用）
+	functions.InitClusters()
 
 	go functions.RunNightlyBatchLoop(repo)
 
@@ -93,7 +95,7 @@ func main() {
 		// このリクエスト専用のrepo。共有repoは書き換えない（多人数で混ざらないように）
 		r := repo.WithIDs(m.Author.ID, charaID)
 
-		// 1. 設定取得（GetSettingはID不要なのでrepoのまま）
+		// 1. 設定取得
 		avgTStr := repo.GetSetting("avg_threshold", "0.38")
 		maxTStr := repo.GetSetting("max_threshold", "0.50")
 		topicTStr := repo.GetSetting("topic_threshold", "0.50")
@@ -164,8 +166,6 @@ func main() {
 							log.Printf("ユーザー情報保存失敗: %v", err)
 						}
 					}
-
-					// コアフィールドをuser_profileに反映
 					var name, gender, job string
 					var age *int
 					for _, item := range result.UserInfo {
@@ -273,7 +273,7 @@ func main() {
 			}
 		}
 
-		// 5. ステータス・段階・プロンプト組み立て
+		// 5. ステータス・段階プロンプト組み立て
 		status, _ := r.GetPartnerStatus()
 
 		rawStages, _ := r.GetCharacterStages(charaID)
@@ -304,6 +304,31 @@ func main() {
 			})
 		}
 
+		// ── 応答モード判定（propensity）────────────────────────────────────────
+		// skip ならここで LLM を呼ばずに絵文字リアクションだけ付けて終了
+		lastUserEmb, _ := r.GetLastUserEmbedding()
+		lastAIContent, _ := r.GetLastAIMessageContent()
+		propResult := functions.ComputePropensity(functions.PropensityInput{
+			UserEmbedding:     userEmbedding,
+			LastUserEmbedding: lastUserEmb,
+			LastAIContent:     lastAIContent,
+			Status:            status,
+		})
+
+		if propResult.Mode == functions.ReplySkip {
+			emoji := functions.SkipEmoji(propResult, status)
+			s.MessageReactionAdd(m.ChannelID, m.ID, emoji)
+			debugMode := repo.GetSetting("debug_mode", "false")
+			if debugMode == "true" {
+				go s.ChannelMessageSend(m.ChannelID, fmt.Sprintf(
+					"_(skip: %s | score: %.1f)_", propResult.Reason, propResult.Score,
+				))
+			}
+			return
+		}
+		// ──────────────────────────────────────────────────────────────────────
+
+		// 6. プロフィール・記憶取得
 		var profile *gemini.UserProfile
 		if prof, err := r.GetUserProfile(); err == nil && prof != nil {
 			profile = &gemini.UserProfile{
@@ -355,15 +380,15 @@ func main() {
 		}
 
 		var pastMsgs []gemini.PastMessage
-		for _, m := range pastMemories {
-			role := m.Role
+		for _, mem := range pastMemories {
+			role := mem.Role
 			if role == "proactive" {
 				role = "assistant"
 			}
 			pastMsgs = append(pastMsgs, gemini.PastMessage{
 				Role:      role,
-				Content:   m.Content,
-				CreatedAt: m.CreatedAt,
+				Content:   mem.Content,
+				CreatedAt: mem.CreatedAt,
 			})
 		}
 
@@ -396,6 +421,7 @@ func main() {
 			RulePrompt:   rulePrompt,
 			CharaPrompt:  charaPrompt,
 			StagePrompt:  stagePrompt,
+			CharaInfos:   charaInfoEntries,
 			Profile:      profile,
 			UserInfos:    userInfoEntries,
 			Topics:       topicEntries,
@@ -406,6 +432,20 @@ func main() {
 			Role:    "user",
 			Content: userInput,
 		})
+
+		// mode 別の追加指示（short / dodge）
+		switch propResult.Mode {
+		case functions.ReplyShort:
+			messages = append(messages, gemini.Message{
+				Role:    "system",
+				Content: functions.ShortInstruction(),
+			})
+		case functions.ReplyDodge:
+			messages = append(messages, gemini.Message{
+				Role:    "system",
+				Content: functions.DodgeInstruction(),
+			})
+		}
 
 		var statusText string
 		if status != nil {
@@ -439,12 +479,21 @@ func main() {
 			return
 		}
 
+		// propensity が short を決定した場合は delta を short で統一
+		if propResult.Mode == functions.ReplyShort && chatResp.ReplyType != "skip" {
+			chatResp.ReplyType = "short"
+			chatResp.Delta = gemini.GetDeltaPreset("short")
+		}
+
 		// 8. 返信を先に送る（保存は後で goroutine に任せる）
 		debugMode := repo.GetSetting("debug_mode", "false")
 		var reply string
 		if debugMode == "true" && status != nil {
-			reply = fmt.Sprintf("%s\n\n(Conv: %s | Topic: %s | 好感度:%d 気分:%d 活力:%d)",
-				aiResponse, convID, topicID, status.Affection, status.Mood, status.Energy)
+			reply = fmt.Sprintf("%s\n\n(Conv: %s | Topic: %s | 好感度:%d 気分:%d 活力:%d | %s: %.1f)",
+				aiResponse, convID, topicID,
+				status.Affection, status.Mood, status.Energy,
+				propResult.Reason, propResult.Score,
+			)
 		} else {
 			reply = aiResponse
 		}
@@ -465,9 +514,7 @@ func main() {
 			go s.ChannelMessageSend(m.ChannelID, timingMsg)
 		}
 
-		// 10. ステータス変動を確定してから保存・更新を goroutine に逃がす
-		//   - Affection += 1 は元のまま（意図不明なので残置）
-		//   - 信頼度は normal のときだけ「好感度との差」で加速させる
+		// 10. ステータス変動確定 → goroutine で保存
 		finalDelta := repository.StatusDelta(chatResp.Delta)
 		finalDelta.Affection += 1
 		if chatResp.ReplyType == "normal" && status != nil {

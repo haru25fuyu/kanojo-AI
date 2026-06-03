@@ -25,11 +25,10 @@ var chatResponseInstruction = `返答は必ず以下のJSON形式のみで返し
 reply_typeの判断基準：
 - "normal": 通常の返答
 - "short": 短い返事だけ（疲れてる・忙しい・素っ気ない時）
-- "skip": 返信しない（Trust低いのに深い話、しつこい、どうでもいい内容、気分が悪い時など）
 
 {
-  "reply": "返答テキスト（skipの場合は空文字）",
-  "reply_type": "normal" または "short" または "skip"
+  "reply": "返答テキスト",
+  "reply_type": "normal" または "short"
 }`
 
 // deltaPresets は reply_type ごとの固定ステータス変動値
@@ -37,6 +36,13 @@ var deltaPresets = map[string]StatusDelta{
 	"normal": {Affection: 5, Trust: 3, Fatigue: 5, Mood: 3, Stress: 2, Energy: -3},
 	"short":  {Affection: 2, Trust: 1, Fatigue: 8, Mood: -3, Stress: 4, Energy: -5},
 	"skip":   {Affection: -3, Trust: -2, Fatigue: 3, Mood: -8, Stress: 6, Energy: -2},
+}
+
+func GetDeltaPreset(replyType string) StatusDelta {
+	if d, ok := deltaPresets[replyType]; ok {
+		return d
+	}
+	return deltaPresets["normal"]
 }
 
 // jsonConfig: JSON抽出用。thinking 0 から始める（精度荒れたら256に上げる）。

@@ -3,6 +3,7 @@ package repository
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -148,4 +149,52 @@ func (r *MemoryRepository) GetTodayConvCount() int {
 		  AND created_at >= CURRENT_DATE`,
 		r.CharacterID, r.UserID)
 	return count
+}
+
+// GetLastUserEmbedding は直近のユーザー発言の embedding を返す（反復検出用）
+func (r *MemoryRepository) GetLastUserEmbedding() ([]float64, error) {
+	var s string
+	err := r.db.Get(&s,
+		`SELECT embedding::text FROM memories
+         WHERE user_id = $1 AND character_id = $2
+           AND role = 'user' AND embedding IS NOT NULL
+         ORDER BY id DESC LIMIT 1`,
+		r.UserID, r.CharacterID)
+	if err != nil {
+		return nil, err
+	}
+	return parseEmbeddingString(s)
+}
+
+// GetLastAIMessageContent は直近のAI発言テキストを返す（締めの skip 判定用）
+func (r *MemoryRepository) GetLastAIMessageContent() (string, error) {
+	var content string
+	err := r.db.Get(&content,
+		`SELECT content FROM memories
+         WHERE user_id = $1 AND character_id = $2
+           AND role IN ('assistant', 'proactive')
+         ORDER BY id DESC LIMIT 1`,
+		r.UserID, r.CharacterID)
+	return content, err
+}
+
+// parseEmbeddingString は pgvector が返す "[0.1,0.2,...]" 形式を []float64 に変換する
+func parseEmbeddingString(s string) ([]float64, error) {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "[")
+	s = strings.TrimSuffix(s, "]")
+	parts := strings.Split(s, ",")
+	result := make([]float64, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		v, err := strconv.ParseFloat(p, 64)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, v)
+	}
+	return result, nil
 }
