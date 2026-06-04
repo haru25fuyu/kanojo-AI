@@ -2,7 +2,6 @@ package functions
 
 import (
 	"context"
-	"fmt"
 	"go_app/gemini"
 	"go_app/repository"
 	"log"
@@ -14,11 +13,6 @@ import (
 // RunEventLoop（乱数デルタ）と並列に goroutine で起動する。
 func RunInnerStateLoop(repo *repository.MemoryRepository, chara repository.Character) {
 	r := repo.WithIDs("default", chara.ID)
-
-	// 初回：行がなければ即時生成トリガーになるよう過去時刻で作成
-	if _, err := r.GetInnerState(); err != nil {
-		_ = r.SaveMoodState("", 0, 0, time.Now().Add(-1*time.Minute))
-	}
 
 	for {
 		time.Sleep(15 * time.Minute)
@@ -36,14 +30,38 @@ func RunInnerStateLoop(repo *repository.MemoryRepository, chara repository.Chara
 		if charaData != nil {
 			charaPrompt = charaData.SystemPrompt
 		}
-		statusStr := fmt.Sprintf("好感度:%d 信頼度:%d 疲労度:%d 気分:%d ストレス:%d 活力:%d",
-			status.Affection, status.Trust, status.Fatigue, status.Mood, status.Stress, status.Energy)
+
+		// statusStr の代わりに stagePrompt を取得
+		rawStages, _ := r.GetCharacterStages(chara.ID)
+		var stagePrompt string
+		if len(rawStages) > 0 {
+			entries := make([]gemini.StageEntry, len(rawStages))
+			for i, s := range rawStages {
+				e := gemini.StageEntry{
+					Parameter: s.Parameter,
+					StageFrom: s.StageFrom,
+					StageTo:   s.StageTo,
+					Prompt:    s.Prompt,
+				}
+				if s.FilterParam != nil {
+					e.FilterParam = *s.FilterParam
+					e.FilterFrom = *s.FilterFrom
+					e.FilterTo = *s.FilterTo
+				}
+				entries[i] = e
+			}
+			stagePrompt = gemini.ResolveStagePrompt(entries, map[string]int{
+				"trust": status.Trust, "affection": status.Affection,
+				"fatigue": status.Fatigue, "mood": status.Mood,
+				"stress": status.Stress, "energy": status.Energy,
+			})
+		}
 
 		intervalMin, _ := strconv.Atoi(r.GetSetting("inner_state_interval_minutes", "90"))
 
 		// ── タイマー発火：next_run_at を過ぎていたら更新 ──────────────────────
 		if state == nil || now.After(state.NextRunAt) {
-			result, err := gemini.GenerateMoodText(context.Background(), modelBatch, charaPrompt, statusStr, now.Hour())
+			result, err := gemini.GenerateMoodText(context.Background(), modelBatch, charaPrompt, stagePrompt, now.Hour())
 			nextRun := now.Add(time.Duration(intervalMin) * time.Minute)
 			if err != nil || result == nil {
 				log.Printf("[内面] 生成失敗: %v", err)
@@ -65,7 +83,7 @@ func RunInnerStateLoop(repo *repository.MemoryRepository, chara repository.Chara
 		moodDiff := iabs(status.Mood - state.MoodAtGen)
 		stressDiff := iabs(status.Stress - state.StressAtGen)
 		if moodDiff >= moodThresh || stressDiff >= stressThresh {
-			result, err := gemini.GenerateMoodText(context.Background(), modelBatch, charaPrompt, statusStr, now.Hour())
+			result, err := gemini.GenerateMoodText(context.Background(), modelBatch, charaPrompt, stagePrompt, now.Hour())
 			if err == nil && result != nil {
 				_ = r.SaveMoodOnly(result.MoodText, status.Mood, status.Stress)
 				log.Printf("[内面] 変化トリガー更新: %q (Δmood=%d Δstress=%d)",

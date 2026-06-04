@@ -696,24 +696,17 @@ type MoodTextResult struct {
 	MoodText string `json:"mood"`
 }
 
-// GenerateMoodText はキャラクターの現在の気分を「地＋表層」1文で生成する。
-// 周期ループ・変化率トリガー両方で呼ぶ。
-//
-// 出力例:
-//
-//	"根は強く好意があるが、今日は疲れ気味で少し素っ気なくなりがち"
 func GenerateMoodText(
 	ctx context.Context,
 	model string,
 	charaPrompt string,
-	statusStr string,
+	stageContext string,
 	hour int,
 ) (*MoodTextResult, error) {
-	schema := `{"mood": "好感度・信頼度（関係の地・ゆっくり変化）と気分・ストレス・活力（今日の表層・速く変化）を合わせた1文。例: 根は強く好意があるが今日は疲れ気味で少し素っ気なくなりがち"}`
+	schema := `{"mood": "上記の現在の状態を踏まえた、キャラクターの今の気分・内面を2〜3文で表現する"}`
 
 	systemContent := charaPrompt + `
-
-あなたはこのキャラクターの現在の気分・内面状態を1文で生成するAIです。
+あなたはこのキャラクターの現在の気分・内面状態を2〜3文で生成するAIです。
 現在の時間帯：` + innerTimeOfDay(hour) + `
 ` + jsonOutputInstruction + `
 
@@ -722,7 +715,7 @@ func GenerateMoodText(
 
 	messages := []Message{
 		{Role: "system", Content: systemContent},
-		{Role: "user", Content: "現在のステータス：" + statusStr},
+		{Role: "user", Content: "現在の状態：" + stageContext},
 	}
 
 	rawResponse, err := GetChatResponseWithContext(ctx, model, messages, jsonConfig)
@@ -783,6 +776,7 @@ func ExtractCharaInfoFromPrompt(ctx context.Context, model string, charaPrompt s
 valueのルール：
 - 単純な事実は1文
 - 背景・経緯・なぜそうなったかは2〜3文で書く
+- 1エントリに複数の事実を混ぜない。1事実・1エントリを原則とする
 min_trustのルール：
 - 設定文に「Trust XX以上」「Trust XX以下」等の記述があればその数値を入れる
 - 記述がなければ 0
@@ -794,8 +788,8 @@ min_trustのルール：
   {
     "key": "キー名（日本語）",
     "value": "値（単純な事実は1文、背景・経緯は2〜3文）",
-    "importance": 0.0から1.0
-	"min_trust"
+    "importance": 0.0から1.0,
+    "min_trust": 0または設定文に記載の数値（記述がなければ0）
   }
 ]
  

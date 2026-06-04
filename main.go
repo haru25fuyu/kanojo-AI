@@ -57,7 +57,6 @@ func main() {
 
 	repo := repository.NewMemoryRepository(db)
 	repository.RunMigrations(db)
-	
 
 	functions.InitClusters()
 
@@ -289,7 +288,6 @@ func main() {
 
 		// 5. ステータス・段階プロンプト・内面状態
 		status, _ := r.GetPartnerStatus()
-		innerState, _ := r.GetInnerState() // 気分テキスト（追加）
 
 		rawStages, _ := r.GetCharacterStages(charaID)
 		var stagePrompt string
@@ -317,6 +315,20 @@ func main() {
 				"stress":    status.Stress,
 				"energy":    status.Energy,
 			})
+		}
+
+		innerState, _ := r.GetInnerState()
+
+		if innerState == nil && status != nil && stagePrompt != "" {
+			result, err := gemini.GenerateMoodText(
+				context.Background(), modelBatch, charaPrompt, stagePrompt, time.Now().Hour(),
+			)
+			if err == nil && result != nil {
+				intervalMin, _ := strconv.Atoi(repo.GetSetting("inner_state_interval_minutes", "90"))
+				_ = r.SaveMoodState(result.MoodText, status.Mood, status.Stress,
+					time.Now().Add(time.Duration(intervalMin)*time.Minute))
+				innerState = &repository.InnerState{MoodText: result.MoodText} // ← 即時反映
+			}
 		}
 
 		// ── 応答モード判定（propensity）────────────────────────────────────────
