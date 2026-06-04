@@ -67,3 +67,18 @@ func (r *MemoryRepository) SearchUserInfo(embedding []float64, limit int) ([]Use
 func (u *UserInfo) Score() float64 {
 	return u.Importance * math.Log(float64(u.MentionCount)+1)
 }
+
+func (r *MemoryRepository) SearchUserInfoByThreshold(embedding []float64, limit int, threshold float64) ([]UserInfo, error) {
+	embeddingStr := fmt.Sprintf("[%s]", strings.Trim(strings.Join(strings.Fields(fmt.Sprint(embedding)), ","), "[]"))
+	var infos []UserInfo
+	query := `
+        SELECT key, value, importance, mention_count, updated_at
+        FROM user_info
+        WHERE embedding IS NOT NULL
+          AND user_id = $3 AND character_id = $4
+          AND (embedding <=> $1::vector) < $2
+        ORDER BY (embedding <=> $1::vector) ASC
+        LIMIT $5`
+	err := r.db.Select(&infos, query, embeddingStr, 1.0-threshold, r.UserID, r.CharacterID, limit)
+	return infos, err
+}

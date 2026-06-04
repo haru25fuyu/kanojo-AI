@@ -57,6 +57,7 @@ func main() {
 
 	repo := repository.NewMemoryRepository(db)
 	repository.RunMigrations(db)
+	
 
 	functions.InitClusters()
 
@@ -64,6 +65,7 @@ func main() {
 
 	activeChars, _ := repo.GetActiveCharacters()
 	for _, c := range activeChars {
+		go functions.SeedCharaInfoFromPrompt(repo, c)
 		go functions.RunEventLoop(repo, c)
 		go functions.RunInnerStateLoop(repo, c) // 気分テキスト生成（追加）
 	}
@@ -152,12 +154,25 @@ func main() {
 					if err != nil || result == nil {
 						return
 					}
+
+					profileKeys := map[string]bool{"name": true, "age": true, "gender": true, "job": true}
+					dedupThreshold, _ := strconv.ParseFloat(repo.GetSetting("chara_info_dedup_threshold", "0.90"), 64)
+
 					for _, item := range result.UserInfo {
+						if profileKeys[item.Key] {
+							continue
+						}
 						emb := gemini.GetEmbedding(item.Key + ": " + item.Value)
-						if err := r.UpsertUserInfo(item.Key, item.Value, item.Importance, emb); err != nil {
+						existing, _ := r.SearchUserInfoByThreshold(emb, 1, dedupThreshold)
+						key := item.Key
+						if len(existing) > 0 {
+							key = existing[0].Key
+						}
+						if err := r.UpsertUserInfo(key, item.Value, item.Importance, emb); err != nil {
 							log.Printf("ユーザー情報保存失敗: %v", err)
 						}
 					}
+
 					var name, gender, job string
 					var age *int
 					for _, item := range result.UserInfo {
@@ -180,10 +195,18 @@ func main() {
 							log.Printf("ユーザープロフィール保存失敗: %v", err)
 						}
 					}
+
 					for _, item := range result.CharaInfo {
 						emb := gemini.GetEmbedding(item.Key + ": " + item.Value)
-						if err := r.UpsertCharaInfo(item.Key, item.Value, item.Importance, emb); err != nil {
+						// 既存キーと照合して近ければキー名を既存に統合
+						existing, _ := r.SearchCharaInfo(emb, 1, dedupThreshold, 9999) // trust=9999 でフィルタ無効化
+						key := item.Key
+						if len(existing) > 0 {
+							key = existing[0].Key
+						}
+						if err := r.UpsertCharaInfo(key, item.Value, item.Importance, emb); err != nil {
 							log.Printf("キャラ情報保存失敗: %v", err)
+
 						}
 					}
 					log.Printf("情報抽出完了: ユーザー%d件 キャラ%d件", len(result.UserInfo), len(result.CharaInfo))

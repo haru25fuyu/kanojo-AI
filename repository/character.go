@@ -8,6 +8,7 @@ type Character struct {
 	SystemPrompt     string    `db:"system_prompt"`
 	ProactiveChannel string    `db:"proactive_channel"`
 	Active           bool      `db:"active"`
+	CharaInfoSeeded  bool      `db:"chara_info_seeded"`
 	CreatedAt        time.Time `db:"created_at"`
 }
 

@@ -409,17 +409,17 @@ func ExtractUserInfo(ctx context.Context, model string, memories []ExtractInfoMe
   "user_info": [
     {
       "key": "情報のキー（例：名前、職業、趣味）",
-      "value": "情報の値",
+      "value": "情報の値。状態変化の経緯（転職・失恋等）は2文まで書いてよい。一時的な感情は1文で簡潔に。",
       "importance": 0.0から1.0（名前=1.0、職業・趣味=0.7、恋愛状況の変化=0.8、一時的な気分=0.2）
     }
   ],
   "chara_info": [
-    {
-      "key": "キャラクターの情報キー",
-      "value": "情報の値",
-      "importance": 0.0から1.0
-    }
-  ]
+  {
+    "key": "キャラクターの情報キー",
+    "value": "情報の値。背景・経緯・感情的な文脈を含む場合は2〜3文で書く。単純な事実は1文でよい。",
+    "importance": 0.0から1.0
+  }
+]
 }
 
 抽出できない場合は空配列を返してください。`,
@@ -756,4 +756,67 @@ func innerTimeOfDay(hour int) string {
 	default:
 		return "深夜"
 	}
+}
+
+func ExtractCharaInfoFromPrompt(ctx context.Context, model string, charaPrompt string) ([]UserInfoItem, error) {
+	messages := []Message{
+		{
+			Role: "system",
+			Content: `あなたはキャラクター設定文から事実情報を抽出するAIです。
+以下のキャラクター設定から、chara_infoとして保存すべき事実・背景情報のみを抽出してください。
+ 
+【抽出する】
+- 職業・仕事の具体的な詳細（勤務先、業務内容、シフト等）
+- 出身地・居住地・生活環境
+- 家族構成・ペット
+- 過去の経緯・背景（なぜそうなったか、転機となった出来事）
+- 具体的な習慣・好み・得意なこと
+- 重要な人間関係（家族・友人等）
+ 
+【抽出しない】
+- 口調・話し方・語尾のクセ
+- 「明るい」「優しい」などの抽象的な性格表現
+- ユーザーへの接し方・返答スタイルの指示
+- キャラクターの役割説明（「あなたは〇〇です」等）
+ 
+valueのルール：
+- 単純な事実は1文
+- 背景・経緯・なぜそうなったかは2〜3文で書く
+ 
+` + jsonOutputInstruction + `
+ 
+以下のJSON配列のみを返してください：
+[
+  {
+    "key": "キー名（日本語）",
+    "value": "値（単純な事実は1文、背景・経緯は2〜3文）",
+    "importance": 0.0から1.0
+  }
+]
+ 
+抽出できる情報がなければ空配列を返してください。`,
+		},
+		{
+			Role:    "user",
+			Content: charaPrompt,
+		},
+	}
+
+	rawResponse, err := GetChatResponseWithContext(ctx, model, messages, jsonConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	rawResponse = strings.TrimSpace(rawResponse)
+	start := strings.Index(rawResponse, "[")
+	end := strings.LastIndex(rawResponse, "]")
+	if start == -1 || end == -1 {
+		return nil, fmt.Errorf("JSONが見つかりません")
+	}
+
+	var items []UserInfoItem
+	if err := json.Unmarshal([]byte(rawResponse[start:end+1]), &items); err != nil {
+		return nil, fmt.Errorf("パース失敗: %w", err)
+	}
+	return items, nil
 }
