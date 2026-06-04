@@ -200,10 +200,10 @@ func RunMigrations(db *sqlx.DB) {
 				('proactive_check_minutes',  '30'),
 				('proactive_min_elapsed',    '60'),
 				('proactive_startup_minutes','10'),
-				('proactive_force_minutes',  '180')
+				('proactive_force_minutes',  '180'),
 				('inner_state_interval_minutes', '90'),
-        		('mood_trigger_threshold',       '1500'),
-        		('stress_trigger_threshold',     '1000')
+				('mood_trigger_threshold',       '1500'),
+				('stress_trigger_threshold',     '1000')
 				ON CONFLICT (key) DO NOTHING`,
 		},
 		{

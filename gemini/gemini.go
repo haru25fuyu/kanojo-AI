@@ -359,6 +359,7 @@ type UserInfoItem struct {
 	Key        string  `json:"key"`
 	Value      string  `json:"value"`
 	Importance float64 `json:"importance"`
+	MinTrust   int     `json:"min_trust"`
 }
 
 type ExtractInfoResult struct {
@@ -782,6 +783,9 @@ func ExtractCharaInfoFromPrompt(ctx context.Context, model string, charaPrompt s
 valueのルール：
 - 単純な事実は1文
 - 背景・経緯・なぜそうなったかは2〜3文で書く
+min_trustのルール：
+- 設定文に「Trust XX以上」「Trust XX以下」等の記述があればその数値を入れる
+- 記述がなければ 0
  
 ` + jsonOutputInstruction + `
  
@@ -791,6 +795,7 @@ valueのルール：
     "key": "キー名（日本語）",
     "value": "値（単純な事実は1文、背景・経緯は2〜3文）",
     "importance": 0.0から1.0
+	"min_trust"
   }
 ]
  
@@ -819,4 +824,53 @@ valueのルール：
 		return nil, fmt.Errorf("パース失敗: %w", err)
 	}
 	return items, nil
+}
+
+// CharaProfileResult は ExtractCharaProfile の出力
+type CharaProfileResult struct {
+	Name   string `json:"name"`
+	Age    *int   `json:"age"`
+	Gender string `json:"gender"`
+	Job    string `json:"job"`
+}
+
+// ExtractCharaProfile は system_prompt からキャラクターの基本プロフィールを抽出する。
+func ExtractCharaProfile(ctx context.Context, model string, charaPrompt string) (*CharaProfileResult, error) {
+	messages := []Message{
+		{
+			Role: "system",
+			Content: `キャラクター設定文から基本プロフィールを抽出してください。
+` + jsonOutputInstruction + `
+
+以下のJSONのみを返してください。不明な項目は null または空文字にしてください：
+{
+  "name":   "キャラクターの名前",
+  "age":    年齢（整数）または null,
+  "gender": "性別",
+  "job":    "職業"
+}`,
+		},
+		{
+			Role:    "user",
+			Content: charaPrompt,
+		},
+	}
+
+	rawResponse, err := GetChatResponseWithContext(ctx, model, messages, jsonConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	rawResponse = strings.TrimSpace(rawResponse)
+	start := strings.Index(rawResponse, "{")
+	end := strings.LastIndex(rawResponse, "}")
+	if start == -1 || end == -1 {
+		return nil, fmt.Errorf("JSONが見つかりません")
+	}
+
+	var result CharaProfileResult
+	if err := json.Unmarshal([]byte(rawResponse[start:end+1]), &result); err != nil {
+		return nil, fmt.Errorf("パース失敗: %w", err)
+	}
+	return &result, nil
 }
