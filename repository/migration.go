@@ -166,6 +166,10 @@ func RunMigrations(db *sqlx.DB) {
 			sql:  `ALTER TABLE chara_info ADD COLUMN IF NOT EXISTS min_trust INT NOT NULL DEFAULT 0`,
 		},
 		{
+			name: "chara_info add max_trust",
+			sql:  `ALTER TABLE chara_info ADD COLUMN IF NOT EXISTS max_trust INT NOT NULL DEFAULT 10000`,
+		},
+		{
 			name: "schedules",
 			sql: `CREATE TABLE IF NOT EXISTS schedules (
 				id           BIGSERIAL   PRIMARY KEY,
@@ -284,7 +288,6 @@ func RunMigrations(db *sqlx.DB) {
         name         TEXT        NOT NULL DEFAULT '',
         age          INT,
         gender       TEXT        NOT NULL DEFAULT '',
-        job          TEXT        NOT NULL DEFAULT '',
         updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`,
 		},

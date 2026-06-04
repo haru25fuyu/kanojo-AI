@@ -372,7 +372,6 @@ func main() {
 				Name:   prof.Name,
 				Age:    prof.Age,
 				Gender: prof.Gender,
-				Job:    prof.Job,
 			}
 		}
 

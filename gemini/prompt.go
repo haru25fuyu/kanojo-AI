@@ -24,7 +24,6 @@ type CharaProfile struct {
 	Name   string
 	Age    *int
 	Gender string
-	Job    string
 }
 
 type UserProfile struct {
@@ -96,9 +95,6 @@ func BuildBaseMessages(p BaseMessagesParams) []Message {
 		}
 		if p.CharaProfile.Gender != "" {
 			parts = append(parts, "性別: "+p.CharaProfile.Gender)
-		}
-		if p.CharaProfile.Job != "" {
-			parts = append(parts, "職業: "+p.CharaProfile.Job)
 		}
 		if len(parts) > 0 {
 			messages = append(messages, Message{

@@ -360,6 +360,7 @@ type UserInfoItem struct {
 	Value      string  `json:"value"`
 	Importance float64 `json:"importance"`
 	MinTrust   int     `json:"min_trust"`
+	MaxTrust   int     `json:"max_trust"`
 }
 
 type ExtractInfoResult struct {
@@ -766,6 +767,7 @@ func ExtractCharaInfoFromPrompt(ctx context.Context, model string, charaPrompt s
 - 過去の経緯・背景（なぜそうなったか、転機となった出来事）
 - 具体的な習慣・好み・得意なこと
 - 重要な人間関係（家族・友人等）
+
  
 【抽出しない】
 - 口調・話し方・語尾のクセ
@@ -774,12 +776,30 @@ func ExtractCharaInfoFromPrompt(ctx context.Context, model string, charaPrompt s
 - キャラクターの役割説明（「あなたは〇〇です」等）
  
 valueのルール：
-- 単純な事実は1文
-- 背景・経緯・なぜそうなったかは2〜3文で書く
-- 1エントリに複数の事実を混ぜない。1事実・1エントリを原則とする
+- 設定文の情報をまとめたり要約したりしない。原文に忠実に抽出する
+
+分割のルール（1事実・1エントリ）：
+- 複数の事実を1エントリに混ぜない
+- 行を分けて書かれているところも分ける
+- 特に以下は必ず別エントリに分ける：
+  - 「職業名」と「業務の実態・内容」
+  - 「職業名」と「仕事へのスタンス・本音」
+  - 「出身地」と「現在の居住地」
+  - 「趣味の種類」と「趣味の具体的な行動・こだわり」
+
+【NG例】
+key: "職業" value: "市役所の公務員。窓口業務をこなしている。完璧なマナーで働いている。"
+
+【OK例】
+key: "職業" value: "市役所の一般行政職"
+key: "業務内容" value: "窓口・書類仕事をこなしている。ミスが許されない環境で、丁寧な敬語と完璧なマナーを維持している。"
 min_trustのルール：
-- 設定文に「Trust XX以上」「Trust XX以下」等の記述があればその数値を入れる
+- 設定文に「Trust XX以上」等の記述があればその数値を入れる
 - 記述がなければ 0
+
+max_trustのルール：
+- 設定文に「Trust XX以下」「Trust XX以下の場合のみ」等の記述があればその数値を入れる
+- 記述がなければ 10000
  
 ` + jsonOutputInstruction + `
  
@@ -789,7 +809,8 @@ min_trustのルール：
     "key": "キー名（日本語）",
     "value": "値（単純な事実は1文、背景・経緯は2〜3文）",
     "importance": 0.0から1.0,
-    "min_trust": 0または設定文に記載の数値（記述がなければ0）
+    "min_trust": 0または設定文に記載の数値（記述がなければ0）,
+    "max_trust": 10000または設定文に記載の数値（記述がなければ10000）
   }
 ]
  
@@ -825,7 +846,6 @@ type CharaProfileResult struct {
 	Name   string `json:"name"`
 	Age    *int   `json:"age"`
 	Gender string `json:"gender"`
-	Job    string `json:"job"`
 }
 
 // ExtractCharaProfile は system_prompt からキャラクターの基本プロフィールを抽出する。
@@ -841,7 +861,6 @@ func ExtractCharaProfile(ctx context.Context, model string, charaPrompt string) 
   "name":   "キャラクターの名前",
   "age":    年齢（整数）または null,
   "gender": "性別",
-  "job":    "職業"
 }`,
 		},
 		{

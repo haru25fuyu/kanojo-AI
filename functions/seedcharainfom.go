@@ -30,11 +30,11 @@ func SeedCharaInfoFromPrompt(repo *repository.MemoryRepository, chara repository
 	if err != nil {
 		log.Printf("[seed] キャラ[%s] chara_profile 抽出失敗: %v", chara.ID, err)
 	} else if profile != nil {
-		if err := r.UpsertCharaProfile(profile.Name, profile.Age, profile.Gender, profile.Job); err != nil {
+		if err := r.UpsertCharaProfile(profile.Name, profile.Age, profile.Gender); err != nil {
 			log.Printf("[seed] キャラ[%s] chara_profile 保存失敗: %v", chara.ID, err)
 		} else {
 			log.Printf("[seed] キャラ[%s] chara_profile 保存完了: name=%s age=%v gender=%s job=%s",
-				chara.ID, profile.Name, profile.Age, profile.Gender, profile.Job)
+				chara.ID, profile.Name, profile.Age, profile.Gender)
 		}
 	}
 
@@ -65,6 +65,12 @@ func SeedCharaInfoFromPrompt(repo *repository.MemoryRepository, chara repository
 			r.DB().Exec(
 				`UPDATE chara_info SET min_trust = $1 WHERE character_id = $2 AND key = $3`,
 				item.MinTrust, chara.ID, key,
+			)
+		}
+		if item.MaxTrust > 0 && item.MaxTrust < 10000 {
+			r.DB().Exec(
+				`UPDATE chara_info SET max_trust = $1 WHERE character_id = $2 AND key = $3`,
+				item.MaxTrust, chara.ID, key,
 			)
 		}
 		saved++

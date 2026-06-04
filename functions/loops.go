@@ -222,7 +222,6 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 				Name:   prof.Name,
 				Age:    prof.Age,
 				Gender: prof.Gender,
-				Job:    prof.Job,
 			}
 		}
 
