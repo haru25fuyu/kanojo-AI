@@ -6,7 +6,6 @@ import (
 	"go_app/gemini"
 	"go_app/repository"
 	"log"
-	"math/rand"
 	"strconv"
 	"time"
 
@@ -23,28 +22,16 @@ func RunNightlyBatchLoop(repo *repository.MemoryRepository) {
 		waitDuration := time.Until(next)
 		log.Printf("次のバッチ実行: %s（%s後）", next.Format("01/02 15:04"), waitDuration.Round(time.Minute))
 		time.Sleep(waitDuration)
+
 		modelBatch := repo.GetSetting("model_batch", "gemini-3.1-flash-lite")
 		repo.RunNightlyBatch(modelBatch)
-	}
-}
 
-func RunEventLoop(repo *repository.MemoryRepository, chara repository.Character) {
-	r := repo.WithIDs("default", chara.ID)
-	for {
-		time.Sleep(90 * time.Minute)
-
-		// 乱数デルタのみ適用（好感度・信頼度は除外）
-		randomDelta := repository.StatusDelta{
-			Fatigue: rand.Intn(3000) - 500,
-			Mood:    rand.Intn(6000) - 3000,
-			Stress:  rand.Intn(2000) - 500,
-			Energy:  rand.Intn(4000) - 2000,
+		// 睡眠回復後に全キャラのinner_state更新
+		activeChars, _ := repo.GetActiveCharacters()
+		for _, c := range activeChars {
+			r := repo.WithIDs("default", c.ID)
+			updateInnerState(r, repo, c)
 		}
-		if err := r.ApplyStatusDelta(randomDelta); err != nil {
-			log.Printf("乱数デルタ適用失敗: %v", err)
-		}
-		log.Printf("乱数デルタ適用: fatigue=%d mood=%d stress=%d energy=%d",
-			randomDelta.Fatigue, randomDelta.Mood, randomDelta.Stress, randomDelta.Energy)
 	}
 }
 

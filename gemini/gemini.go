@@ -839,3 +839,47 @@ func ExtractCharaProfile(ctx context.Context, model string, charaPrompt string) 
 	}
 	return &result, nil
 }
+
+type MoodTextResult struct {
+	MoodText string `json:"mood"`
+}
+
+func GenerateMoodText(
+	ctx context.Context,
+	model string,
+	stageContext string,
+) (*MoodTextResult, error) {
+	schema := `{"mood": "キャラクターの現在の状態を2〜3文で描写する"}`
+
+	systemContent := `以下の状態テキストを統合して、キャラクターの今の状態を2〜3文にまとめてください。
+創作禁止。状態テキストにない情報は追加しないこと。
+優先順位：疲労・ストレスの状態 > 気分 > 好感度・信頼度の状態
+疲労やストレスが高い場合はそれを最優先で反映すること。
+ユーザーへの返信文ではなく、キャラクターの内面状態の描写として書くこと。` + jsonOutputInstruction + `
+
+以下のJSONのみを返してください：
+` + schema
+
+	messages := []Message{
+		{Role: "system", Content: systemContent},
+		{Role: "user", Content: stageContext},
+	}
+
+	rawResponse, err := GetChatResponseWithContext(ctx, model, messages, jsonConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	rawResponse = strings.TrimSpace(rawResponse)
+	start := strings.Index(rawResponse, "{")
+	end := strings.LastIndex(rawResponse, "}")
+	if start == -1 || end == -1 {
+		return nil, fmt.Errorf("JSONが見つかりません")
+	}
+
+	var result MoodTextResult
+	if err := json.Unmarshal([]byte(rawResponse[start:end+1]), &result); err != nil {
+		return nil, fmt.Errorf("パース失敗: %w", err)
+	}
+	return &result, nil
+}

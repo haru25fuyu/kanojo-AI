@@ -38,3 +38,11 @@ func (r *MemoryRepository) UpsertUserProfile(name string, age *int, gender strin
 	_, err := r.db.Exec(query, r.UserID, name, age, gender, job)
 	return err
 }
+
+func (r *MemoryRepository) GetActiveUserIDsForChara(charaID string) ([]string, error) {
+    var userIDs []string
+    err := r.db.Select(&userIDs, `
+        SELECT user_id FROM user_profile
+        WHERE user_id != 'default'`)
+    return userIDs, err
+}
