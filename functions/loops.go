@@ -6,6 +6,7 @@ import (
 	"go_app/gemini"
 	"go_app/repository"
 	"log"
+	"math/rand"
 	"strconv"
 	"time"
 
@@ -26,17 +27,53 @@ func RunNightlyBatchLoop(repo *repository.MemoryRepository) {
 		modelBatch := repo.GetSetting("model_batch", "gemini-3.1-flash-lite")
 		repo.RunNightlyBatch(modelBatch)
 
-		// 睡眠回復後に全キャラのinner_state更新
+		// 睡眠回復後に全キャラ×全ユーザーのinner_state更新
 		activeChars, _ := repo.GetActiveCharacters()
 		for _, c := range activeChars {
-			r := repo.WithIDs("default", c.ID)
-			updateInnerState(r, repo, c)
+			userIDs, _ := repo.GetActiveUserIDsForChara(c.ID)
+			for _, uid := range userIDs {
+				r := repo.WithIDs(uid, c.ID)
+				updateInnerState(r, repo, c)
+			}
 		}
 	}
 }
 
+func RunEventLoop(repo *repository.MemoryRepository, chara repository.Character) {
+	// 起動後1時間半待機
+	time.Sleep(90 * time.Minute)
+
+	for {
+		userIDs, _ := repo.GetActiveUserIDsForChara(chara.ID)
+		for _, uid := range userIDs {
+			r := repo.WithIDs(uid, chara.ID)
+
+			randomDelta := repository.StatusDelta{
+				Fatigue: rand.Intn(3000) - 500,
+				Mood:    rand.Intn(6000) - 3000,
+				Stress:  rand.Intn(2000) - 500,
+				Energy:  rand.Intn(4000) - 2000,
+			}
+			if err := r.ApplyStatusDelta(randomDelta); err != nil {
+				log.Printf("乱数デルタ適用失敗 user=%s: %v", uid, err)
+			}
+			log.Printf("乱数デルタ適用 user=%s: fatigue=%d mood=%d stress=%d energy=%d",
+				uid, randomDelta.Fatigue, randomDelta.Mood, randomDelta.Stress, randomDelta.Energy)
+
+			// 夜間はinner_state更新スキップ
+			hour := time.Now().Hour()
+			hourStart, _ := strconv.Atoi(repo.GetSetting("proactive_hour_start", "8"))
+			hourEnd, _ := strconv.Atoi(repo.GetSetting("proactive_hour_end", "22"))
+			if hour >= hourStart && hour < hourEnd {
+				updateInnerState(r, repo, chara)
+			}
+		}
+
+		time.Sleep(90 * time.Minute)
+	}
+}
+
 func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, chara repository.Character) {
-	r := repo.WithIDs("default", chara.ID)
 	startupMinutes, _ := strconv.Atoi(repo.GetSetting("proactive_startup_minutes", "10"))
 	time.Sleep(time.Duration(startupMinutes) * time.Minute)
 
@@ -44,11 +81,22 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 		checkMinutes, _ := strconv.Atoi(repo.GetSetting("proactive_check_minutes", "30"))
 		time.Sleep(time.Duration(checkMinutes) * time.Minute)
 
-		// 最後のユーザー発言からの経過時間で判定
+		// 最後に話したユーザーを取得してそのステータスを使う
+		var lastUserID string
+		err := repo.DB().Get(&lastUserID,
+			`SELECT user_id FROM conversations WHERE character_id = $1 AND user_id != 'default' ORDER BY updated_at DESC LIMIT 1`,
+			chara.ID)
+		if err != nil || lastUserID == "" {
+			log.Printf("自発メッセージ: ユーザー発言履歴なし、スキップ")
+			continue
+		}
+
+		r := repo.WithIDs(lastUserID, chara.ID)
+
 		var lastUserTime time.Time
 		dbErr := r.DB().Get(&lastUserTime,
-			`SELECT created_at FROM memories WHERE character_id = $1 AND role = 'user' ORDER BY id DESC LIMIT 1`,
-			chara.ID)
+			`SELECT created_at FROM memories WHERE character_id = $1 AND user_id = $2 AND role = 'user' ORDER BY id DESC LIMIT 1`,
+			chara.ID, lastUserID)
 		if dbErr != nil {
 			log.Printf("自発メッセージ: ユーザー発言履歴なし、スキップ")
 			continue
@@ -63,11 +111,10 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 			continue
 		}
 
-		// 直近のメッセージが自発メッセージの場合は返信来るまで待つ
 		var lastRole string
 		r.DB().Get(&lastRole,
-			`SELECT role FROM memories WHERE character_id = $1 ORDER BY id DESC LIMIT 1`,
-			chara.ID)
+			`SELECT role FROM memories WHERE character_id = $1 AND user_id = $2 ORDER BY id DESC LIMIT 1`,
+			chara.ID, lastUserID)
 
 		forceMinutesCheck, _ := strconv.Atoi(repo.GetSetting("proactive_force_minutes", "4320"))
 		if lastRole == "proactive" && elapsed < time.Duration(forceMinutesCheck)*time.Minute {
@@ -131,9 +178,8 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 			continue
 		}
 
-		// 直近の会話履歴を取得
 		var lastConvID string
-		r.DB().Get(&lastConvID, `SELECT id FROM conversations WHERE character_id = $1 ORDER BY updated_at DESC LIMIT 1`, chara.ID)
+		r.DB().Get(&lastConvID, `SELECT id FROM conversations WHERE character_id = $1 AND user_id = $2 ORDER BY updated_at DESC LIMIT 1`, chara.ID, lastUserID)
 		pastMemories, _ := r.GetRecentMemories(lastConvID, 10)
 
 		rawStages, _ := r.GetCharacterStages(chara.ID)
@@ -177,7 +223,6 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 			}
 		}
 
-		// キャラクターコアプロフィール（追加）
 		var charaProfile *gemini.CharaProfile
 		if prof, err := r.GetCharaProfile(); err == nil && prof != nil {
 			charaProfile = &gemini.CharaProfile{
@@ -223,7 +268,6 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 			PastMessages: pastMsgs,
 		})
 
-		// ユーザー発言の代わりに自発メッセージ用の指示を入れる
 		forceMinutes, _ := strconv.Atoi(repo.GetSetting("proactive_force_minutes", "180"))
 		forceSend := elapsed >= time.Duration(forceMinutes)*time.Minute
 		minElapsedDur := time.Duration(minElapsed) * time.Minute
@@ -270,7 +314,6 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 			continue
 		}
 
-		// skip なら送らない
 		if chatResp.ReplyType == "skip" && !forceSend {
 			log.Printf("自発メッセージ: 見送り（reply_type=skip）（経過:%s）", elapsed.Round(time.Minute))
 			continue
@@ -283,18 +326,13 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 		dg.ChannelMessageSend(channelID, chatResp.Reply)
 		log.Printf("自発メッセージ送信: %s", chatResp.Reply)
 
-		// 履歴保存
-		var lastUserID string
-		r.DB().Get(&lastUserID, `SELECT user_id FROM conversations WHERE character_id = $1 ORDER BY updated_at DESC LIMIT 1`, chara.ID)
-		if lastUserID != "" {
-			r2 := repo.WithIDs(lastUserID, chara.ID)
-			embedding := gemini.GetEmbedding(chatResp.Reply)
-			var newConvID string
-			err := r2.DB().Get(&newConvID, `INSERT INTO conversations (user_id, character_id) VALUES ($1, $2) RETURNING id`, lastUserID, chara.ID)
-			if err == nil {
-				r2.SaveMemory(chatResp.Reply, embedding, "proactive", newConvID)
-				log.Printf("自発メッセージ履歴保存: conv=%s user=%s", newConvID, lastUserID)
-			}
+		r2 := repo.WithIDs(lastUserID, chara.ID)
+		embedding := gemini.GetEmbedding(chatResp.Reply)
+		var newConvID string
+		err = r2.DB().Get(&newConvID, `INSERT INTO conversations (user_id, character_id) VALUES ($1, $2) RETURNING id`, lastUserID, chara.ID)
+		if err == nil {
+			r2.SaveMemory(chatResp.Reply, embedding, "proactive", newConvID)
+			log.Printf("自発メッセージ履歴保存: conv=%s user=%s", newConvID, lastUserID)
 		}
 	}
 }
@@ -314,7 +352,17 @@ func RunScheduleLoop(repo *repository.MemoryRepository, dg *discordgo.Session) {
 			if ac.ProactiveChannel == "" {
 				continue
 			}
-			r := repo.WithIDs("default", ac.ID)
+
+			// 最後に話したユーザーのステータスを使う
+			var lastUserID string
+			err := repo.DB().Get(&lastUserID,
+				`SELECT user_id FROM conversations WHERE character_id = $1 AND user_id != 'default' ORDER BY updated_at DESC LIMIT 1`,
+				ac.ID)
+			if err != nil || lastUserID == "" {
+				continue
+			}
+
+			r := repo.WithIDs(lastUserID, ac.ID)
 
 			schedules, err := r.GetTodaySchedules()
 			if err != nil || len(schedules) == 0 {

@@ -453,8 +453,11 @@ func main() {
 			messages = append(messages, gemini.Message{Role: "system", Content: functions.DodgeInstruction()})
 		}
 
+		innerState, _ := r.GetInnerState()
 		var statusText string
-		if stagePrompt != "" {
+		if innerState != nil && innerState.MoodText != "" {
+			statusText = "【今の状態・気分】\n" + innerState.MoodText
+		} else {
 			statusText = stagePrompt
 		}
 
