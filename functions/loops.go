@@ -141,19 +141,6 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 			now.Format("15:04"), lastMsgLabel, elapsedText, elapsedText,
 		)
 
-		// chara_info retrieval（trust-gated、proactive は top-N のみ）
-		charaInfoLimit, _ := strconv.Atoi(repo.GetSetting("chara_info_limit", "5"))
-		var charaInfoEntries []gemini.CharaInfoEntry
-		if status != nil {
-			topCharaInfos, _ := r.GetTopCharaInfo(charaInfoLimit, status.Trust)
-			for _, info := range topCharaInfos {
-				charaInfoEntries = append(charaInfoEntries, gemini.CharaInfoEntry{
-					Key:   info.Key,
-					Value: info.Value,
-				})
-			}
-		}
-
 		hour := time.Now().Hour()
 		modelChat := repo.GetSetting("model_chat", "gemini-3-flash-preview")
 		rulePrompt := r.GetSetting("system_prompt_rule", "日常会話に徹してください。")
@@ -254,8 +241,7 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 			RulePrompt:   rulePrompt,
 			CharaPrompt:  charaPrompt,
 			StagePrompt:  stagePrompt,
-			CharaProfile: charaProfile, // キャラクターコアプロフィール（追加）
-			CharaInfos:   charaInfoEntries,
+			CharaProfile: charaProfile,
 			Profile:      profile,
 			UserInfos:    userInfoEntries,
 			Topics:       topicEntries,

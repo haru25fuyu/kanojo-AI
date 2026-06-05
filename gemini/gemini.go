@@ -700,23 +700,18 @@ type MoodTextResult struct {
 func GenerateMoodText(
 	ctx context.Context,
 	model string,
-	charaPrompt string,
 	stageContext string,
-	hour int,
 ) (*MoodTextResult, error) {
-	schema := `{"mood": "上記の現在の状態を踏まえた、キャラクターの今の気分・内面を2〜3文で表現する"}`
+	schema := `{"mood": "以下の状態テキストを矛盾なく1〜2文にまとめてください。創作や追加情報は不要です。"}`
 
-	systemContent := charaPrompt + `
-あなたはこのキャラクターの現在の気分・内面状態を2〜3文で生成するAIです。
-現在の時間帯：` + innerTimeOfDay(hour) + `
-` + jsonOutputInstruction + `
+	systemContent := `複数の状態テキストを矛盾なく1〜2文にまとめるだけ。創作禁止。` + jsonOutputInstruction + `
 
 以下のJSONのみを返してください：
 ` + schema
 
 	messages := []Message{
 		{Role: "system", Content: systemContent},
-		{Role: "user", Content: "現在の状態：" + stageContext},
+		{Role: "user", Content: stageContext},
 	}
 
 	rawResponse, err := GetChatResponseWithContext(ctx, model, messages, jsonConfig)

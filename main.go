@@ -321,7 +321,7 @@ func main() {
 
 		if innerState == nil && status != nil && stagePrompt != "" {
 			result, err := gemini.GenerateMoodText(
-				context.Background(), modelBatch, charaPrompt, stagePrompt, time.Now().Hour(),
+				context.Background(), modelBatch, stagePrompt,
 			)
 			if err == nil && result != nil {
 				intervalMin, _ := strconv.Atoi(repo.GetSetting("inner_state_interval_minutes", "90"))

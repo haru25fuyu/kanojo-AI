@@ -25,11 +25,6 @@ func RunInnerStateLoop(repo *repository.MemoryRepository, chara repository.Chara
 
 		now := time.Now()
 		modelBatch := r.GetSetting("model_batch", "gemini-3.1-flash-lite")
-		charaData, _ := r.GetCharacter(chara.ID)
-		var charaPrompt string
-		if charaData != nil {
-			charaPrompt = charaData.SystemPrompt
-		}
 
 		// statusStr の代わりに stagePrompt を取得
 		rawStages, _ := r.GetCharacterStages(chara.ID)
@@ -61,7 +56,7 @@ func RunInnerStateLoop(repo *repository.MemoryRepository, chara repository.Chara
 
 		// ── タイマー発火：next_run_at を過ぎていたら更新 ──────────────────────
 		if state == nil || now.After(state.NextRunAt) {
-			result, err := gemini.GenerateMoodText(context.Background(), modelBatch, charaPrompt, stagePrompt, now.Hour())
+			result, err := gemini.GenerateMoodText(context.Background(), modelBatch, stagePrompt)
 			nextRun := now.Add(time.Duration(intervalMin) * time.Minute)
 			if err != nil || result == nil {
 				log.Printf("[内面] 生成失敗: %v", err)
@@ -83,7 +78,7 @@ func RunInnerStateLoop(repo *repository.MemoryRepository, chara repository.Chara
 		moodDiff := iabs(status.Mood - state.MoodAtGen)
 		stressDiff := iabs(status.Stress - state.StressAtGen)
 		if moodDiff >= moodThresh || stressDiff >= stressThresh {
-			result, err := gemini.GenerateMoodText(context.Background(), modelBatch, charaPrompt, stagePrompt, now.Hour())
+			result, err := gemini.GenerateMoodText(context.Background(), modelBatch, stagePrompt)
 			if err == nil && result != nil {
 				_ = r.SaveMoodOnly(result.MoodText, status.Mood, status.Stress)
 				log.Printf("[内面] 変化トリガー更新: %q (Δmood=%d Δstress=%d)",
