@@ -66,7 +66,6 @@ func main() {
 	for _, c := range activeChars {
 		go functions.SeedCharaInfoFromPrompt(repo, c)
 		go functions.RunEventLoop(repo, c)
-		go functions.RunInnerStateLoop(repo, c) // 気分テキスト生成（追加）
 	}
 
 	state := &lastConvState{}
@@ -468,15 +467,9 @@ func main() {
 			messages = append(messages, gemini.Message{Role: "system", Content: functions.DodgeInstruction()})
 		}
 
-		// statusText：mood_text があれば使う（なければ生数値にフォールバック）
 		var statusText string
-		if innerState != nil && innerState.MoodText != "" {
-			statusText = "【今の状態・気分】\n" + innerState.MoodText
-		} else if status != nil {
-			statusText = fmt.Sprintf(
-				"【現在のパートナーステータス】\n好感度:%d 信頼度:%d 疲労度:%d 気分:%d ストレス:%d 活力:%d\nこのステータスに基づいて返答してください。",
-				status.Affection, status.Trust, status.Fatigue, status.Mood, status.Stress, status.Energy,
-			)
+		if stagePrompt != "" {
+			statusText = stagePrompt
 		}
 
 		thinkingBudget, _ := strconv.Atoi(repo.GetSetting("chat_thinking_level", "0"))

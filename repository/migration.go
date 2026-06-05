@@ -99,7 +99,7 @@ func RunMigrations(db *sqlx.DB) {
 			sql: `CREATE TABLE IF NOT EXISTS partner_status (
 				user_id      TEXT        NOT NULL DEFAULT 'default',
 				character_id TEXT        NOT NULL DEFAULT 'default',
-				affection    INT         NOT NULL DEFAULT 3500  CHECK (affection  BETWEEN 0 AND 10000),
+				affection    INT         NOT NULL DEFAULT 1500  CHECK (affection  BETWEEN 0 AND 10000),
 				trust        INT         NOT NULL DEFAULT 500   CHECK (trust      BETWEEN 0 AND 10000),
 				fatigue      INT         NOT NULL DEFAULT 2000  CHECK (fatigue    BETWEEN 0 AND 10000),
 				mood         INT         NOT NULL DEFAULT 0     CHECK (mood       BETWEEN -10000 AND 10000),
