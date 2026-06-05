@@ -93,20 +93,6 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 			continue
 		}
 
-		// 内面状態（気分テキスト）取得（追加）
-		innerState, _ := r.GetInnerState()
-
-		// statusText：mood_text があれば使う（なければ生数値にフォールバック）
-		var statusText string
-		if innerState != nil && innerState.MoodText != "" {
-			statusText = "【今の状態・気分】\n" + innerState.MoodText
-		} else {
-			statusText = fmt.Sprintf(
-				"【現在のパートナーステータス】\n好感度:%d 信頼度:%d 疲労度:%d 気分:%d ストレス:%d 活力:%d\nこのステータスに基づいて返答してください。",
-				status.Affection, status.Trust, status.Fatigue, status.Mood, status.Stress, status.Energy,
-			)
-		}
-
 		hotTopics, _ := r.GetTopTopics(3)
 		hotTopics = r.FillConvSummaries(hotTopics, nil)
 		var topicTexts []string
@@ -191,6 +177,8 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 				"proactive": status.Trust,
 			})
 		}
+
+		statusText := stagePrompt
 
 		var profile *gemini.UserProfile
 		if prof, err := r.GetUserProfile(); err == nil && prof != nil {

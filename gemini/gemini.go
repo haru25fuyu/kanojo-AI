@@ -690,49 +690,6 @@ func GetChatResponseWithImage(ctx context.Context, model string, messages []Mess
 	}, nil
 }
 
-// ─── gemini/gemini.go または gemini/ 内の新規ファイルに追加 ─────────────────
-
-// MoodTextResult は GenerateMoodText の出力
-type MoodTextResult struct {
-	MoodText string `json:"mood"`
-}
-
-func GenerateMoodText(
-	ctx context.Context,
-	model string,
-	stageContext string,
-) (*MoodTextResult, error) {
-	schema := `{"mood": "以下の状態テキストを矛盾なく1〜2文にまとめてください。創作や追加情報は不要です。"}`
-
-	systemContent := `複数の状態テキストを矛盾なく1〜2文にまとめるだけ。創作禁止。` + jsonOutputInstruction + `
-
-以下のJSONのみを返してください：
-` + schema
-
-	messages := []Message{
-		{Role: "system", Content: systemContent},
-		{Role: "user", Content: stageContext},
-	}
-
-	rawResponse, err := GetChatResponseWithContext(ctx, model, messages, jsonConfig)
-	if err != nil {
-		return nil, err
-	}
-
-	rawResponse = strings.TrimSpace(rawResponse)
-	start := strings.Index(rawResponse, "{")
-	end := strings.LastIndex(rawResponse, "}")
-	if start == -1 || end == -1 {
-		return nil, fmt.Errorf("JSONが見つかりません")
-	}
-
-	var result MoodTextResult
-	if err := json.Unmarshal([]byte(rawResponse[start:end+1]), &result); err != nil {
-		return nil, fmt.Errorf("パース失敗: %w", err)
-	}
-	return &result, nil
-}
-
 func innerTimeOfDay(hour int) string {
 	switch {
 	case hour >= 5 && hour < 10:

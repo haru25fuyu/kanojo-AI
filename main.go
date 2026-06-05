@@ -316,20 +316,6 @@ func main() {
 			})
 		}
 
-		innerState, _ := r.GetInnerState()
-
-		if innerState == nil && status != nil && stagePrompt != "" {
-			result, err := gemini.GenerateMoodText(
-				context.Background(), modelBatch, stagePrompt,
-			)
-			if err == nil && result != nil {
-				intervalMin, _ := strconv.Atoi(repo.GetSetting("inner_state_interval_minutes", "90"))
-				_ = r.SaveMoodState(result.MoodText, status.Mood, status.Stress,
-					time.Now().Add(time.Duration(intervalMin)*time.Minute))
-				innerState = &repository.InnerState{MoodText: result.MoodText} // ← 即時反映
-			}
-		}
-
 		// ── 応答モード判定（propensity）────────────────────────────────────────
 		lastUserEmb, _ := r.GetLastUserEmbedding()
 		lastAIContent, _ := r.GetLastAIMessageContent()
@@ -450,7 +436,7 @@ func main() {
 			RulePrompt:   rulePrompt,
 			CharaPrompt:  charaPrompt,
 			StagePrompt:  stagePrompt,
-			CharaProfile: charaProfile, // キャラクターコアプロフィール（追加）
+			CharaProfile: charaProfile,
 			CharaInfos:   charaInfoEntries,
 			Profile:      profile,
 			UserInfos:    userInfoEntries,
