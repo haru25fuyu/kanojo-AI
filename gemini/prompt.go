@@ -6,16 +6,16 @@ import (
 	"time"
 )
 
-// BaseMessagesParams はプロンプト組み立てに必要なデータをまとめた構造体
 type BaseMessagesParams struct {
 	RulePrompt   string
-	CharaPrompt  string // 人格・声のみ（事実・背景は CharaInfos 側に移す）
+	CharaPrompt  string
 	StagePrompt  string
-	CharaInfos   []CharaInfoEntry // キャラクター固有情報（retrieval、trust-gated）
+	CharaInfos   []CharaInfoEntry
 	Profile      *UserProfile
 	UserInfos    []UserInfoEntry
 	Topics       []TopicEntry
 	Events       []EventEntry
+	Schedules    []ScheduleEntry
 	PastMessages []PastMessage
 	CharaProfile *CharaProfile
 }
@@ -33,7 +33,6 @@ type UserProfile struct {
 	Job    string
 }
 
-// CharaInfoEntry はキャラクターの事実・背景情報（retrieval で取得した項目）
 type CharaInfoEntry struct {
 	Key   string
 	Value string
@@ -55,29 +54,30 @@ type EventEntry struct {
 	CreatedAt time.Time
 }
 
+type ScheduleEntry struct {
+	Label string
+	Date  time.Time
+}
+
 type PastMessage struct {
 	Role      string
 	Content   string
 	CreatedAt time.Time
 }
 
-// BuildBaseMessages は通常会話・自発メッセージ共通のプロンプトを組み立てる
 func BuildBaseMessages(p BaseMessagesParams) []Message {
 	var messages []Message
 
-	// 絶対ルール
 	messages = append(messages, Message{
 		Role:    "system",
 		Content: p.RulePrompt,
 	})
 
-	// キャラ設定（人格・声のみ。職業・出身地等の事実は CharaInfos から retrieval）
 	messages = append(messages, Message{
 		Role:    "system",
 		Content: p.CharaPrompt,
 	})
 
-	// 段階プロンプト（trust/affection ゲート）
 	if p.StagePrompt != "" {
 		messages = append(messages, Message{
 			Role:    "system",
@@ -91,7 +91,7 @@ func BuildBaseMessages(p BaseMessagesParams) []Message {
 			parts = append(parts, "名前: "+p.CharaProfile.Name)
 		}
 		if p.CharaProfile.Age != nil {
-			parts = append(parts, fmt.Sprintf("年齢: %d歳", *p.CharaProfile.Age))
+			parts = append(parts, fmt.Sprintf("年齢: %d", *p.CharaProfile.Age))
 		}
 		if p.CharaProfile.Gender != "" {
 			parts = append(parts, "性別: "+p.CharaProfile.Gender)
@@ -99,18 +99,14 @@ func BuildBaseMessages(p BaseMessagesParams) []Message {
 		if len(parts) > 0 {
 			messages = append(messages, Message{
 				Role:    "system",
-				Content: "【このキャラクターの基本情報】\n- " + strings.Join(parts, "\n- "),
+				Content: strings.Join(parts, "\n"),
 			})
 		}
 	}
 
-	// キャラクター固有情報（retrieval、trust-gated）
-	// 職業・出身・習慣などの事実、および背景（なぜそうなったか）を受け取る。
-	// CharaPrompt には人格・声のみ残し、事実はここで渡すことで
-	// 「仕事話が常に前景化する」問題を構造的に防ぐ。
 	if len(p.CharaInfos) > 0 {
 		var sb strings.Builder
-		sb.WriteString("【このキャラクターについて】\n")
+		sb.WriteString("【あなた自身の情報】\n")
 		for _, info := range p.CharaInfos {
 			fmt.Fprintf(&sb, "- %s: %s\n", info.Key, info.Value)
 		}
@@ -120,41 +116,31 @@ func BuildBaseMessages(p BaseMessagesParams) []Message {
 		})
 	}
 
-	// 現在時刻
-	weekdays := []string{"日", "月", "火", "水", "木", "金", "土"}
-	now := time.Now()
-	messages = append(messages, Message{
-		Role:    "system",
-		Content: fmt.Sprintf("【現在時刻】%s（%s）%s", now.Format("2006/01/02"), weekdays[now.Weekday()], now.Format("15:04")),
-	})
-
-	// ユーザーコア情報
 	if p.Profile != nil {
 		var parts []string
 		if p.Profile.Name != "" {
 			parts = append(parts, "名前: "+p.Profile.Name)
 		}
 		if p.Profile.Age != nil {
-			parts = append(parts, fmt.Sprintf("年齢: %d歳", *p.Profile.Age))
+			parts = append(parts, fmt.Sprintf("年齢: %d", *p.Profile.Age))
 		}
 		if p.Profile.Gender != "" {
 			parts = append(parts, "性別: "+p.Profile.Gender)
 		}
 		if p.Profile.Job != "" {
-			parts = append(parts, "仕事: "+p.Profile.Job)
+			parts = append(parts, "職業: "+p.Profile.Job)
 		}
 		if len(parts) > 0 {
 			messages = append(messages, Message{
 				Role:    "system",
-				Content: "【ユーザーの基本情報】\n- " + strings.Join(parts, "\n- "),
+				Content: "【相手のプロフィール】\n" + strings.Join(parts, "\n"),
 			})
 		}
 	}
 
-	// ユーザー情報
 	if len(p.UserInfos) > 0 {
 		var sb strings.Builder
-		sb.WriteString("【ユーザーについて知っていること】\n")
+		sb.WriteString("【相手について知っていること】\n")
 		for _, info := range p.UserInfos {
 			fmt.Fprintf(&sb, "- %s: %s\n", info.Key, info.Value)
 		}
@@ -164,7 +150,6 @@ func BuildBaseMessages(p BaseMessagesParams) []Message {
 		})
 	}
 
-	// 話題の記憶
 	if len(p.Topics) > 0 {
 		var sb strings.Builder
 		sb.WriteString("【あなたが覚えていること】\n")
@@ -180,21 +165,26 @@ func BuildBaseMessages(p BaseMessagesParams) []Message {
 		})
 	}
 
-	// パートナーのイベント（時間しばり + シフト対応後に有効化予定）
-	//if len(p.Events) > 0 {
-	//	var sb strings.Builder
-	//	sb.WriteString("【最近あったこと】\n")
-	//	for _, e := range p.Events {
-	//		fmt.Fprintf(&sb, "- %s（%s）\n", e.Event, e.CreatedAt.Format("1/2 15:04"))
-	//	}
-	//	messages = append(messages, Message{
-	//		Role:    "system",
-	//		Content: sb.String(),
-	//	})
-	//}
+	if len(p.Schedules) > 0 {
+		var sb strings.Builder
+		sb.WriteString("【相手の予定】\n")
+		now := time.Now()
+		for _, s := range p.Schedules {
+			var timing string
+			if s.Date.Format("2006-01-02") == now.Format("2006-01-02") {
+				timing = "今日"
+			} else {
+				timing = "明日"
+			}
+			fmt.Fprintf(&sb, "- %s: %s\n", timing, s.Label)
+		}
+		messages = append(messages, Message{
+			Role:    "system",
+			Content: sb.String(),
+		})
+	}
 
-	// 短期記憶（時刻付き）
-	now = time.Now()
+	now := time.Now()
 	for _, mem := range p.PastMessages {
 		diff := now.Sub(mem.CreatedAt)
 		var timeLabel string

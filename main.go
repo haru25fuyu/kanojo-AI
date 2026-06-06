@@ -350,6 +350,16 @@ func main() {
 			}
 		}
 
+		// スケジュール取得
+		todaySchedules, _ := r.GetTodaySchedules()
+		var scheduleEntries []gemini.ScheduleEntry
+		for _, s := range todaySchedules {
+			scheduleEntries = append(scheduleEntries, gemini.ScheduleEntry{
+				Label: s.Label,
+				Date:  s.Date,
+			})
+		}
+
 		// キャラクターコアプロフィール（追加）
 		var charaProfile *gemini.CharaProfile
 		if prof, err := r.GetCharaProfile(); err == nil && prof != nil {
@@ -544,7 +554,6 @@ func main() {
 	for _, c := range activeChars {
 		go functions.RunProactiveLoop(repo, dg, c)
 	}
-	go functions.RunScheduleLoop(repo, dg)
 
 	fmt.Println("Botが起動しました。CTRL+Cで終了します。")
 

@@ -172,13 +172,15 @@ func RunMigrations(db *sqlx.DB) {
 		{
 			name: "schedules",
 			sql: `CREATE TABLE IF NOT EXISTS schedules (
-				id           BIGSERIAL   PRIMARY KEY,
-				user_id      TEXT        NOT NULL DEFAULT 'default',
-				label        TEXT        NOT NULL,
-				date         DATE        NOT NULL,
-				repeat       BOOLEAN     NOT NULL DEFAULT FALSE,
-				notified     BOOLEAN     NOT NULL DEFAULT FALSE,
-				created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			    id           BIGSERIAL   PRIMARY KEY,
+			    user_id      TEXT        NOT NULL DEFAULT 'default',
+			    character_id TEXT        NOT NULL DEFAULT 'default',
+			    label        TEXT        NOT NULL,
+			    date         DATE        NOT NULL,
+			    repeat       BOOLEAN     NOT NULL DEFAULT FALSE,
+			    notified     BOOLEAN     NOT NULL DEFAULT FALSE,
+			    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			    UNIQUE (user_id, character_id, label, date)
 			)`,
 		},
 		{

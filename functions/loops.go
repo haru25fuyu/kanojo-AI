@@ -40,6 +40,14 @@ func RunNightlyBatchLoop(repo *repository.MemoryRepository) {
 }
 
 func RunEventLoop(repo *repository.MemoryRepository, chara repository.Character) {
+	// 起動直後に1回即時生成
+	userIDs, _ := repo.GetActiveUserIDsForChara(chara.ID)
+	for _, uid := range userIDs {
+		r := repo.WithIDs(uid, chara.ID)
+		updateInnerState(r, repo, chara)
+		log.Printf("inner_state初生成 user=%s: charaID=%v", uid, chara.ID)
+	}
+
 	// 起動後1時間半待機
 	time.Sleep(90 * time.Minute)
 
