@@ -9,23 +9,25 @@ import (
 )
 
 type BaseMessagesParams struct {
-	RulePrompt   string
-	CharaPrompt  string
-	StagePrompt  string
-	CharaInfos   []CharaInfoEntry
-	Profile      *UserProfile
-	UserInfos    []UserInfoEntry
-	Topics       []TopicEntry
-	Events       []EventEntry
-	Schedules    []ScheduleEntry
-	PastMessages []PastMessage
-	CharaProfile *CharaProfile
+	RulePrompt         string
+	CharaPrompt        string
+	StagePrompt        string
+	CharaInfos         []CharaInfoEntry
+	Profile            *UserProfile
+	UserInfos          []UserInfoEntry
+	Topics             []TopicEntry
+	Events             []EventEntry
+	Schedules          []ScheduleEntry
+	PastMessages       []PastMessage
+	CharaProfile       *CharaProfile
+	RelationshipEvents []string // 重要イベントのサマリー一覧（検索ヒット or 上位N件フォールバック）
 }
 
 type CharaProfile struct {
-	Name   string
-	Age    *int
-	Gender string
+	Name              string
+	Age               *int
+	Gender            string
+	RelationshipStory string // ストーリーライン（常時注入）
 }
 
 type UserProfile struct {
@@ -104,6 +106,7 @@ func BuildBaseMessages(p BaseMessagesParams) []Message {
 		})
 	}
 
+	// キャラクターコアプロフィール
 	if p.CharaProfile != nil {
 		var parts []string
 		if p.CharaProfile.Name != "" {
@@ -121,6 +124,27 @@ func BuildBaseMessages(p BaseMessagesParams) []Message {
 				Content: strings.Join(parts, "\n"),
 			})
 		}
+
+		// ストーリーライン（関係の経緯）
+		if p.CharaProfile.RelationshipStory != "" {
+			messages = append(messages, Message{
+				Role:    "system",
+				Content: "【これまでの関係】\n" + p.CharaProfile.RelationshipStory,
+			})
+		}
+	}
+
+	// 重要イベント（検索ヒット or 上位N件フォールバック）
+	if len(p.RelationshipEvents) > 0 {
+		var sb strings.Builder
+		sb.WriteString("【一緒に乗り越えてきたこと】\n")
+		for _, e := range p.RelationshipEvents {
+			fmt.Fprintf(&sb, "- %s\n", e)
+		}
+		messages = append(messages, Message{
+			Role:    "system",
+			Content: sb.String(),
+		})
 	}
 
 	if len(p.CharaInfos) > 0 {

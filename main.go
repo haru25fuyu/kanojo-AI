@@ -362,13 +362,14 @@ func main() {
 			})
 		}
 
-		// キャラクターコアプロフィール（追加）
+		// キャラクターコアプロフィール
 		var charaProfile *gemini.CharaProfile
 		if prof, err := r.GetCharaProfile(); err == nil && prof != nil {
 			charaProfile = &gemini.CharaProfile{
-				Name:   prof.Name,
-				Age:    prof.Age,
-				Gender: prof.Gender,
+				Name:              prof.Name,
+				Age:               prof.Age,
+				Gender:            prof.Gender,
+				RelationshipStory: prof.RelationshipStory,
 			}
 		}
 
@@ -444,17 +445,34 @@ func main() {
 			}
 		}
 
+		// 関係イベント取得（検索ヒット → フォールバック上位N件）
+		relEventLimit, _ := strconv.Atoi(repo.GetSetting("relationship_events_limit", "3"))
+		relEventThreshold, _ := strconv.ParseFloat(repo.GetSetting("relationship_events_threshold", "0.45"), 64)
+		var relationshipEvents []string
+		searchedRelEvents, _ := r.SearchRelationshipEvents(userEmbedding, relEventLimit, relEventThreshold)
+		if len(searchedRelEvents) > 0 {
+			for _, e := range searchedRelEvents {
+				relationshipEvents = append(relationshipEvents, e.Summary)
+			}
+		} else {
+			topRelEvents, _ := r.GetTopRelationshipEvents(relEventLimit)
+			for _, e := range topRelEvents {
+				relationshipEvents = append(relationshipEvents, e.Summary)
+			}
+		}
+
 		messages := gemini.BuildBaseMessages(gemini.BaseMessagesParams{
-			RulePrompt:   rulePrompt,
-			CharaPrompt:  charaPrompt,
-			StagePrompt:  stagePrompt,
-			CharaProfile: charaProfile,
-			CharaInfos:   charaInfoEntries,
-			Schedules:    scheduleEntries,
-			Profile:      profile,
-			UserInfos:    userInfoEntries,
-			Topics:       topicEntries,
-			PastMessages: pastMsgs,
+			RulePrompt:         rulePrompt,
+			CharaPrompt:        charaPrompt,
+			StagePrompt:        stagePrompt,
+			CharaProfile:       charaProfile,
+			CharaInfos:         charaInfoEntries,
+			Schedules:          scheduleEntries,
+			Profile:            profile,
+			UserInfos:          userInfoEntries,
+			Topics:             topicEntries,
+			PastMessages:       pastMsgs,
+			RelationshipEvents: relationshipEvents,
 		})
 
 		messages = append(messages, gemini.Message{Role: "user", Content: userInput})

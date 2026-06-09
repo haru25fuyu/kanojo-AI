@@ -244,9 +244,10 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 		var charaProfile *gemini.CharaProfile
 		if prof, err := r.GetCharaProfile(); err == nil && prof != nil {
 			charaProfile = &gemini.CharaProfile{
-				Name:   prof.Name,
-				Age:    prof.Age,
-				Gender: prof.Gender,
+				Name:              prof.Name,
+				Age:               prof.Age,
+				Gender:            prof.Gender,
+				RelationshipStory: prof.RelationshipStory,
 			}
 		}
 
@@ -275,15 +276,23 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 			})
 		}
 
+		relEventLimit, _ := strconv.Atoi(r.GetSetting("relationship_events_limit", "3"))
+		var relationshipEvents []string
+		topRelEvents, _ := r.GetTopRelationshipEvents(relEventLimit)
+		for _, e := range topRelEvents {
+			relationshipEvents = append(relationshipEvents, e.Summary)
+		}
+
 		messages := gemini.BuildBaseMessages(gemini.BaseMessagesParams{
-			RulePrompt:   rulePrompt,
-			CharaPrompt:  charaPrompt,
-			StagePrompt:  stagePrompt,
-			CharaProfile: charaProfile,
-			Profile:      profile,
-			UserInfos:    userInfoEntries,
-			Topics:       topicEntries,
-			PastMessages: pastMsgs,
+			RulePrompt:         rulePrompt,
+			CharaPrompt:        charaPrompt,
+			StagePrompt:        stagePrompt,
+			CharaProfile:       charaProfile,
+			Profile:            profile,
+			UserInfos:          userInfoEntries,
+			Topics:             topicEntries,
+			PastMessages:       pastMsgs,
+			RelationshipEvents: relationshipEvents,
 		})
 
 		forceMinutes, _ := strconv.Atoi(repo.GetSetting("proactive_force_minutes", "180"))
