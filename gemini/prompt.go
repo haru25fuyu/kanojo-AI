@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	jpholiday "github.com/rabitt1ove/jp-holidays"
 )
 
 type BaseMessagesParams struct {
@@ -65,12 +67,29 @@ type PastMessage struct {
 	CreatedAt time.Time
 }
 
+func currentTimeLabel() string {
+	jst := time.FixedZone("Asia/Tokyo", 9*60*60)
+	now := time.Now().In(jst)
+	weekdays := []string{"日", "月", "火", "水", "木", "金", "土"}
+	dayLabel := weekdays[now.Weekday()] + "曜日"
+	if name := jpholiday.HolidayName(now); name != "" {
+		dayLabel = name
+	}
+	return fmt.Sprintf("%s（%s）", now.Format("2006/01/02 15:04"), dayLabel)
+}
+
 func BuildBaseMessages(p BaseMessagesParams) []Message {
 	var messages []Message
 
 	messages = append(messages, Message{
 		Role:    "system",
 		Content: p.RulePrompt,
+	})
+
+	// 現在時刻・曜日・祝日
+	messages = append(messages, Message{
+		Role:    "system",
+		Content: "現在は" + currentTimeLabel() + "です。この時刻を前提に話を進めてください。",
 	})
 
 	messages = append(messages, Message{

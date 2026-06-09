@@ -238,8 +238,6 @@ func GetEmbedding(text string) []float64 {
 }
 
 // GetChatResponseWithStatus は会話返答を生成する。
-// thinkingBudget: 0 の fastConfig を使って最速で返す。
-// ChatResponse.Timings に各ステップの計測結果を含める。
 func GetChatResponseWithStatus(ctx context.Context, model string, messages []Message, status string, thinkingBudget int) (*ChatResponse, error) {
 	totalStart := time.Now()
 
@@ -257,7 +255,7 @@ func GetChatResponseWithStatus(ctx context.Context, model string, messages []Mes
 		Content: chatResponseInstruction,
 	})
 
-	// ── Gemini API 呼び出し（thinkingオフ） ──
+	// ── Gemini API 呼び出し ──
 	apiStart := time.Now()
 	rawResponse, err := GetChatResponseWithContext(ctx, model, augmented, buildFastConfig(thinkingBudget))
 	apiElapsed := time.Since(apiStart)
@@ -473,13 +471,15 @@ func ExtractSchedules(ctx context.Context, model string, memories []string) ([]S
 
 [
   {
-    "label": "ラベル（例：誕生日、付き合った日、朝早い、テスト）",
+    "label": "ラベル（例：誕生日、付き合った日、テスト）",
     "date": "YYYY-MM-DD（一時的な予定）またはMM-DD（毎年繰り返す記念日）",
     "repeat": true（毎年繰り返す記念日）またはfalse（一時的な予定）
   }
 ]
 
-「明日朝早い」→ repeat:false、明日の日付
+labelには日付情報（「今日」「明日」「来週」等）を含めないこと。
+「明日朝早い」→ label: "朝早い"
+
 「誕生日は5月3日」→ repeat:true、MM-DD形式
 日付が不明なものは抽出しないでください。`, time.Now().Format("2006-01-02")),
 		},

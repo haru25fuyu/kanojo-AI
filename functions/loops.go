@@ -289,12 +289,12 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 			)
 		case elapsed < 3*minElapsedDur:
 			proactiveInstruction = timeConstraint + fmt.Sprintf(
-				"（%s連絡がなかった。話しかけたい気持ちがあれば、自分の近況や気になったことを交えつつユーザーへの質問を含めて話しかけて。特に理由がなければskipでもいい）",
+				"（%s連絡がなかった。気になって話しかけたければ、ユーザーの様子を聞いて。特に理由がなければskipでもいい）",
 				elapsedText,
 			)
 		case elapsed < 8*minElapsedDur:
 			proactiveInstruction = timeConstraint + fmt.Sprintf(
-				"（%s連絡がなかった。今日あったことを少し話しつつユーザーの様子も聞いて。疲れてたり気分が乗らなければskipでいい）",
+				"（%s連絡がなかった。ユーザーの様子が気になっている。skipでもいい）",
 				elapsedText,
 			)
 		case elapsed < 24*minElapsedDur:

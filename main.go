@@ -219,7 +219,9 @@ func main() {
 					}
 					var lines []string
 					for _, m := range memories {
-						lines = append(lines, m.Role+": "+m.Content)
+						if m.Role == "user" {
+							lines = append(lines, m.Content)
+						}
 					}
 					items, err := gemini.ExtractSchedules(context.Background(), mbatch, lines)
 					if err != nil || len(items) == 0 {
@@ -448,6 +450,7 @@ func main() {
 			StagePrompt:  stagePrompt,
 			CharaProfile: charaProfile,
 			CharaInfos:   charaInfoEntries,
+			Schedules:    scheduleEntries,
 			Profile:      profile,
 			UserInfos:    userInfoEntries,
 			Topics:       topicEntries,
