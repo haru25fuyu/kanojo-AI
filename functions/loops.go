@@ -283,6 +283,13 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 			relationshipEvents = append(relationshipEvents, e.Summary)
 		}
 
+		var dailyLog []string
+		if logs, err := r.GetTodayDailyLog(); err == nil {
+			for _, l := range logs {
+				dailyLog = append(dailyLog, l.Event)
+			}
+		}
+
 		messages := gemini.BuildBaseMessages(gemini.BaseMessagesParams{
 			RulePrompt:         rulePrompt,
 			CharaPrompt:        charaPrompt,
@@ -293,6 +300,7 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 			Topics:             topicEntries,
 			PastMessages:       pastMsgs,
 			RelationshipEvents: relationshipEvents,
+			DailyLog:           dailyLog,
 		})
 
 		forceMinutes, _ := strconv.Atoi(repo.GetSetting("proactive_force_minutes", "180"))

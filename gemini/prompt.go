@@ -20,14 +20,15 @@ type BaseMessagesParams struct {
 	Schedules          []ScheduleEntry
 	PastMessages       []PastMessage
 	CharaProfile       *CharaProfile
-	RelationshipEvents []string // 重要イベントのサマリー一覧（検索ヒット or 上位N件フォールバック）
+	RelationshipEvents []string // 重要イベントのサマリー一覧
+	DailyLog           []string // 今日のユーザー行動ログ
 }
 
 type CharaProfile struct {
 	Name              string
 	Age               *int
 	Gender            string
-	RelationshipStory string // ストーリーライン（常時注入）
+	RelationshipStory string
 }
 
 type UserProfile struct {
@@ -134,7 +135,7 @@ func BuildBaseMessages(p BaseMessagesParams) []Message {
 		}
 	}
 
-	// 重要イベント（検索ヒット or 上位N件フォールバック）
+	// 重要イベント
 	if len(p.RelationshipEvents) > 0 {
 		var sb strings.Builder
 		sb.WriteString("【一緒に乗り越えてきたこと】\n")
@@ -186,6 +187,19 @@ func BuildBaseMessages(p BaseMessagesParams) []Message {
 		sb.WriteString("【相手について知っていること】\n")
 		for _, info := range p.UserInfos {
 			fmt.Fprintf(&sb, "- %s: %s\n", info.Key, info.Value)
+		}
+		messages = append(messages, Message{
+			Role:    "system",
+			Content: sb.String(),
+		})
+	}
+
+	// 今日のユーザー行動ログ
+	if len(p.DailyLog) > 0 {
+		var sb strings.Builder
+		sb.WriteString("【今日わかっていること】\n")
+		for _, e := range p.DailyLog {
+			fmt.Fprintf(&sb, "- %s\n", e)
 		}
 		messages = append(messages, Message{
 			Role:    "system",

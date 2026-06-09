@@ -224,7 +224,12 @@ func RunMigrations(db *sqlx.DB) {
         ('sleep_recovery_mode',          'static'),
         ('sleep_recovery_static_energy', '3000'),
         ('sleep_recovery_static_fatigue','2000'),
-        ('sleep_recovery_static_stress', '300')
+        ('sleep_recovery_static_stress', '300'),
+		('relationship_centroid_limit',    '200'),
+		('relationship_outlier_distance',  '0.3'),
+		('relationship_events_max',        '5'),
+		('relationship_events_limit',      '3'),
+		('relationship_events_threshold',  '0.45')
         ON CONFLICT (key) DO NOTHING`,
 		},
 		{
@@ -339,6 +344,18 @@ func RunMigrations(db *sqlx.DB) {
 			name: "relationship_events embedding index",
 			sql: `CREATE INDEX IF NOT EXISTS relationship_events_embedding_idx
         ON relationship_events USING hnsw (embedding vector_cosine_ops)`,
+		},
+		{
+			name: "user_daily_log",
+			sql: `CREATE TABLE IF NOT EXISTS user_daily_log (
+				id           BIGSERIAL   PRIMARY KEY,
+				user_id      TEXT        NOT NULL DEFAULT 'default',
+				character_id TEXT        NOT NULL DEFAULT 'default',
+				event        TEXT        NOT NULL,
+				date         DATE        NOT NULL DEFAULT CURRENT_DATE,
+				created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE (user_id, character_id, event, date)
+			)`,
 		},
 	}
 

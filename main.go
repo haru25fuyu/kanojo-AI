@@ -253,6 +253,28 @@ func main() {
 						log.Printf("conversation[%s]要約完了", cid)
 					}
 				}(prevConvID, prevTopicID, modelBatch, m.Author.ID, charaID)
+
+				// 日次行動ログ抽出（非同期）
+				go func(cid, mbatch, uid, craid string) {
+					r := repo.WithIDs(uid, craid)
+					memories, err := r.GetRecentMemories(cid, 100)
+					if err != nil || len(memories) == 0 {
+						return
+					}
+					var lines []gemini.ExtractInfoMemory
+					for _, m := range memories {
+						lines = append(lines, gemini.ExtractInfoMemory{Role: m.Role, Content: m.Content})
+					}
+					activities, err := gemini.ExtractDailyActivities(context.Background(), mbatch, lines)
+					if err != nil || len(activities) == 0 {
+						return
+					}
+					if err := r.InsertDailyActivities(activities); err != nil {
+						log.Printf("日次行動ログ保存失敗: %v", err)
+						return
+					}
+					log.Printf("日次行動ログ保存完了: %d件", len(activities))
+				}(prevConvID, modelBatch, m.Author.ID, charaID)
 			}
 
 			if isNewTopic {
@@ -461,6 +483,13 @@ func main() {
 			}
 		}
 
+		var dailyLog []string
+		if logs, err := r.GetTodayDailyLog(); err == nil {
+			for _, l := range logs {
+				dailyLog = append(dailyLog, l.Event)
+			}
+		}
+
 		messages := gemini.BuildBaseMessages(gemini.BaseMessagesParams{
 			RulePrompt:         rulePrompt,
 			CharaPrompt:        charaPrompt,
@@ -473,6 +502,7 @@ func main() {
 			Topics:             topicEntries,
 			PastMessages:       pastMsgs,
 			RelationshipEvents: relationshipEvents,
+			DailyLog:           dailyLog,
 		})
 
 		messages = append(messages, gemini.Message{Role: "user", Content: userInput})
