@@ -302,3 +302,79 @@ func (r *MemoryRepository) getSettingInt(key string, defaultValue int) int {
 	}
 	return i
 }
+
+// UpdateRelationshipData はユーザー×キャラの関係データを更新する（nightly バッチから呼ぶ）
+func (r *MemoryRepository) UpdateRelationshipData(ctx context.Context, modelBatch string) {
+	log.Printf("関係データ更新開始: user=%s chara=%s", r.UserID, r.CharacterID)
+
+	centroidLimit := r.getSettingInt("relationship_centroid_limit", 200)
+	centroid, err := r.GetNormalCentroid(centroidLimit)
+	if err != nil || centroid == nil {
+		log.Printf("セントロイド計算失敗または会話不足: %v", err)
+		r.refreshRelationshipStory(ctx, modelBatch)
+		return
+	}
+
+	var distanceThreshold float64 = 0.3
+	if v := r.GetSetting("relationship_outlier_distance", ""); v != "" {
+		fmt.Sscanf(v, "%f", &distanceThreshold)
+	}
+	maxEvents := r.getSettingInt("relationship_events_max", 5)
+
+	outliers, err := r.GetOutlierConversations(centroid, distanceThreshold, 10)
+	if err != nil {
+		log.Printf("外れ値取得失敗: %v", err)
+	}
+
+	for _, outlier := range outliers {
+		isHeavy, err := gemini.JudgeConversationWeight(ctx, modelBatch, outlier.Summary)
+		if err != nil {
+			log.Printf("重さ判定失敗: %v", err)
+			continue
+		}
+		if !isHeavy {
+			continue
+		}
+
+		embedding := gemini.GetEmbedding(outlier.Summary)
+		if embedding == nil {
+			continue
+		}
+		if err := r.InsertRelationshipEvent(outlier.Summary, outlier.Distance, embedding, maxEvents); err != nil {
+			log.Printf("イベント保存失敗: %v", err)
+		} else {
+			log.Printf("関係イベント記録: weight=%.3f summary=%.50s", outlier.Distance, outlier.Summary)
+		}
+	}
+
+	r.refreshRelationshipStory(ctx, modelBatch)
+}
+
+// refreshRelationshipStory はイベント一覧からストーリーラインを再生成する
+func (r *MemoryRepository) refreshRelationshipStory(ctx context.Context, modelBatch string) {
+	events, err := r.GetTopRelationshipEvents(10)
+	if err != nil || len(events) == 0 {
+		return
+	}
+
+	status, err := r.GetPartnerStatus()
+	if err != nil {
+		return
+	}
+
+	summaries := make([]string, len(events))
+	for i, e := range events {
+		summaries[i] = e.Summary
+	}
+
+	story, err := gemini.GenerateRelationshipStory(ctx, modelBatch, summaries, status.Affection, status.Trust)
+	if err != nil {
+		log.Printf("ストーリー生成失敗: %v", err)
+		return
+	}
+	if err := r.UpdateRelationshipStory(story); err != nil {
+		log.Printf("ストーリー保存失敗: %v", err)
+		return
+	}
+	log.Printf("ストーリーライン更新完了")
+}

@@ -193,24 +193,39 @@ func RunMigrations(db *sqlx.DB) {
 		{
 			name: "default settings",
 			sql: `INSERT INTO settings (key, value) VALUES
-				('avg_threshold',       '0.38'),
-				('max_threshold',       '0.50'),
-				('topic_threshold',     '0.50'),
-				('model_chat',          'gemini-3-flash-preview'),
-				('model_batch',         'gemini-3.1-flash-lite'),
-				('system_prompt_rule',  'あなたは人間の女性として自然な日常会話をしてください。AIや機械であることを意識させる発言は絶対にしない。専門用語や難しい知識をひけらかさない。日常的な話題に徹する。'),
-				('debug_mode',          'true'),
-				('proactive_hour_start','8'),
-				('proactive_hour_end',  '22'),
-				('user_info_limit',          '5'),
-				('proactive_check_minutes',  '30'),
-				('proactive_min_elapsed',    '60'),
-				('proactive_startup_minutes','10'),
-				('proactive_force_minutes',  '180'),
-				('inner_state_interval_minutes', '90'),
-				('mood_trigger_threshold',       '1500'),
-				('stress_trigger_threshold',     '1000')
-				ON CONFLICT (key) DO NOTHING`,
+        ('avg_threshold',                '0.55'),
+        ('max_threshold',                '0.67'),
+        ('topic_threshold',              '0.65'),
+        ('model_chat',                   'gemini-3.1-flash-lite'),
+        ('model_batch',                  'gemini-3.1-flash-lite'),
+        ('system_prompt_rule',           '【チャット形式ルール】
+1回の出力は3文以内、合計80文字程度を厳守してください。
+複数の段落に分けた長文や、AI特有の解説調・要約調のテキストは禁止です。
+自分の話は控えめにし、相手の話を引き出すことを意識すること。
+テンポの良いリアルなチャットのラリーを徹底してください。
+会話履歴に存在しない話題・出来事を「以前話した」として言及しないこと。
+ 
+話題の優先順位：
+1. ユーザーの話・質問
+2. 過去の会話で盛り上がったこと
+3. キャラクターの気分・状態'),
+        ('debug_mode',                   'false'),
+        ('chat_thinking_level',          '2'),
+        ('proactive_hour_start',         '6'),
+        ('proactive_hour_end',           '22'),
+        ('user_info_limit',              '5'),
+        ('proactive_check_minutes',      '60'),
+        ('proactive_min_elapsed',        '180'),
+        ('proactive_startup_minutes',    '10'),
+        ('proactive_force_minutes',      '4320'),
+        ('inner_state_interval_minutes', '90'),
+        ('mood_trigger_threshold',       '1500'),
+        ('stress_trigger_threshold',     '1000'),
+        ('sleep_recovery_mode',          'static'),
+        ('sleep_recovery_static_energy', '3000'),
+        ('sleep_recovery_static_fatigue','2000'),
+        ('sleep_recovery_static_stress', '300')
+        ON CONFLICT (key) DO NOTHING`,
 		},
 		{
 			name: "update_timestamp function",
@@ -303,6 +318,27 @@ func RunMigrations(db *sqlx.DB) {
         next_run_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`,
+		},
+		{
+			name: "chara_profile add relationship_story",
+			sql:  `ALTER TABLE chara_profile ADD COLUMN IF NOT EXISTS relationship_story TEXT NOT NULL DEFAULT ''`,
+		},
+		{
+			name: "relationship_events",
+			sql: `CREATE TABLE IF NOT EXISTS relationship_events (
+        id           BIGSERIAL   PRIMARY KEY,
+        user_id      TEXT        NOT NULL DEFAULT 'default',
+        character_id TEXT        NOT NULL DEFAULT 'default',
+        summary      TEXT        NOT NULL DEFAULT '',
+        weight       FLOAT       NOT NULL DEFAULT 0.0,
+        embedding    vector(1536),
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+		},
+		{
+			name: "relationship_events embedding index",
+			sql: `CREATE INDEX IF NOT EXISTS relationship_events_embedding_idx
+        ON relationship_events USING hnsw (embedding vector_cosine_ops)`,
 		},
 	}
 

@@ -27,13 +27,23 @@ func RunNightlyBatchLoop(repo *repository.MemoryRepository) {
 		modelBatch := repo.GetSetting("model_batch", "gemini-3.1-flash-lite")
 		repo.RunNightlyBatch(modelBatch)
 
-		// 睡眠回復後に全キャラ×全ユーザーのinner_state更新
 		activeChars, _ := repo.GetActiveCharacters()
+
+		// 睡眠回復後に全キャラ×全ユーザーのinner_state更新
 		for _, c := range activeChars {
 			userIDs, _ := repo.GetActiveUserIDsForChara(c.ID)
 			for _, uid := range userIDs {
 				r := repo.WithIDs(uid, c.ID)
 				updateInnerState(r, repo, c)
+			}
+		}
+
+		// 関係データ更新（全キャラ×全ユーザー）
+		for _, c := range activeChars {
+			userIDs, _ := repo.GetActiveUserIDsForChara(c.ID)
+			for _, uid := range userIDs {
+				r := repo.WithIDs(uid, c.ID)
+				r.UpdateRelationshipData(context.Background(), modelBatch)
 			}
 		}
 	}

@@ -6,18 +6,19 @@ import "time"
 // relevance retrieval に乗せると「今日のメッセージに当たらない回に自分の名前を忘れる」
 // 事故が起きるため、UserProfile と同様に常時注入する固定枠として扱う。
 type CharaProfile struct {
-	CharacterID string    `db:"character_id"`
-	Name        string    `db:"name"`
-	Age         *int      `db:"age"`
-	Gender      string    `db:"gender"`
-	UpdatedAt   time.Time `db:"updated_at"`
+	CharacterID       string    `db:"character_id"`
+	Name              string    `db:"name"`
+	Age               *int      `db:"age"`
+	Gender            string    `db:"gender"`
+	RelationshipStory string    `db:"relationship_story"`
+	UpdatedAt         time.Time `db:"updated_at"`
 }
 
 // GetCharaProfile はキャラクターのコア情報を取得する。
 func (r *MemoryRepository) GetCharaProfile() (*CharaProfile, error) {
 	var profile CharaProfile
 	err := r.db.Get(&profile, `
-		SELECT character_id, name, age, gender, updated_at
+		SELECT character_id, name, age, gender, relationship_story, updated_at
 		FROM chara_profile
 		WHERE character_id = $1`, r.CharacterID)
 	if err != nil {
@@ -38,5 +39,15 @@ func (r *MemoryRepository) UpsertCharaProfile(name string, age *int, gender stri
 			gender     = COALESCE(NULLIF(EXCLUDED.gender, ''), chara_profile.gender),
 			updated_at = NOW()`
 	_, err := r.db.Exec(query, r.CharacterID, name, age, gender)
+	return err
+}
+
+// UpdateRelationshipStory はnightlyバッチからストーリーラインを更新する。
+func (r *MemoryRepository) UpdateRelationshipStory(story string) error {
+	_, err := r.db.Exec(`
+		UPDATE chara_profile
+		SET relationship_story = $1, updated_at = NOW()
+		WHERE character_id = $2`,
+		story, r.CharacterID)
 	return err
 }
