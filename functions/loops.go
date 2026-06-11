@@ -66,23 +66,21 @@ func RunEventLoop(repo *repository.MemoryRepository, chara repository.Character)
 		for _, uid := range userIDs {
 			r := repo.WithIDs(uid, chara.ID)
 
-			randomDelta := repository.StatusDelta{
-				Fatigue: rand.Intn(3000) - 500,
-				Mood:    rand.Intn(6000) - 3000,
-				Stress:  rand.Intn(2000) - 500,
-				Energy:  rand.Intn(4000) - 2000,
-			}
-			if err := r.ApplyStatusDelta(randomDelta); err != nil {
-				log.Printf("乱数デルタ適用失敗 user=%s: %v", uid, err)
-			}
-			log.Printf("乱数デルタ適用 user=%s: fatigue=%d mood=%d stress=%d energy=%d",
-				uid, randomDelta.Fatigue, randomDelta.Mood, randomDelta.Stress, randomDelta.Energy)
-
-			// 夜間はinner_state更新スキップ
 			hour := time.Now().Hour()
-			hourStart, _ := strconv.Atoi(repo.GetSetting("proactive_hour_start", "8"))
+			hourStart, _ := strconv.Atoi(repo.GetSetting("proactive_hour_start", "6"))
 			hourEnd, _ := strconv.Atoi(repo.GetSetting("proactive_hour_end", "22"))
 			if hour >= hourStart && hour < hourEnd {
+				randomDelta := repository.StatusDelta{
+					Fatigue: rand.Intn(1000) - 200,
+					Mood:    rand.Intn(3000) - 1500,
+					Stress:  rand.Intn(1000) - 500,
+					Energy:  rand.Intn(3000) - 1500,
+				}
+				if err := r.ApplyStatusDelta(randomDelta); err != nil {
+					log.Printf("乱数デルタ適用失敗 user=%s: %v", uid, err)
+				}
+				log.Printf("乱数デルタ適用 user=%s: fatigue=%d mood=%d stress=%d energy=%d",
+					uid, randomDelta.Fatigue, randomDelta.Mood, randomDelta.Stress, randomDelta.Energy)
 				updateInnerState(r, repo, chara)
 			}
 		}

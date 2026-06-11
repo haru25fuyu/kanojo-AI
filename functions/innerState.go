@@ -5,6 +5,8 @@ import (
 	"go_app/gemini"
 	"go_app/repository"
 	"log"
+	"strconv"
+	"time"
 )
 
 func updateInnerState(r *repository.MemoryRepository, repo *repository.MemoryRepository, chara repository.Character) {
@@ -48,7 +50,14 @@ func updateInnerState(r *repository.MemoryRepository, repo *repository.MemoryRep
 		log.Printf("[内面] 生成失敗: %v", err)
 		return
 	}
-	_ = r.SaveMoodOnly(result.MoodText, status.Mood, status.Stress)
+
+	intervalMinutes, _ := strconv.Atoi(repo.GetSetting("inner_state_interval_minutes", "90"))
+	nextRunAt := time.Now().Add(time.Duration(intervalMinutes) * time.Minute)
+
+	if err := r.SaveMoodState(result.MoodText, status.Mood, status.Stress, nextRunAt); err != nil {
+		log.Printf("[内面] 保存失敗: %v", err)
+		return
+	}
 	log.Printf("[内面] 更新 user=%s chara=%s: %q", r.UserID, chara.ID, result.MoodText)
 }
 
