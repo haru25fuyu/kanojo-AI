@@ -333,6 +333,10 @@ func RunMigrations(db *sqlx.DB) {
 			sql:  `ALTER TABLE chara_profile ADD COLUMN IF NOT EXISTS job TEXT NOT NULL DEFAULT ''`,
 		},
 		{
+			name: "chara_profile add world_setting",
+			sql:  `ALTER TABLE chara_profile ADD COLUMN IF NOT EXISTS world_setting TEXT NOT NULL DEFAULT ''`,
+		},
+		{
 			name: "relationship_events",
 			sql: `CREATE TABLE IF NOT EXISTS relationship_events (
         id           BIGSERIAL   PRIMARY KEY,

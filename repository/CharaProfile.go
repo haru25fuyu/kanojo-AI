@@ -11,6 +11,7 @@ type CharaProfile struct {
 	Age               *int      `db:"age"`
 	Gender            string    `db:"gender"`
 	Job               string    `db:"job"`
+	WorldSetting      string    `db:"world_setting"`
 	RelationshipStory string    `db:"relationship_story"`
 	UpdatedAt         time.Time `db:"updated_at"`
 }
@@ -19,7 +20,7 @@ type CharaProfile struct {
 func (r *MemoryRepository) GetCharaProfile() (*CharaProfile, error) {
 	var profile CharaProfile
 	err := r.db.Get(&profile, `
-		SELECT character_id, name, age, gender, job, relationship_story, updated_at
+		SELECT character_id, name, age, gender, job, world_setting, relationship_story, updated_at
 		FROM chara_profile
 		WHERE character_id = $1`, r.CharacterID)
 	if err != nil {
@@ -41,6 +42,14 @@ func (r *MemoryRepository) UpsertCharaProfile(name string, age *int, gender, job
 			job        = COALESCE(NULLIF(EXCLUDED.job, ''),    chara_profile.job),
 			updated_at = NOW()`
 	_, err := r.db.Exec(query, r.CharacterID, name, age, gender, job)
+	return err
+}
+
+// UpdateWorldSetting はなりきり用の世界観（静的な舞台設定）を保存する。作者が設定する想定。
+func (r *MemoryRepository) UpdateWorldSetting(setting string) error {
+	_, err := r.db.Exec(`
+		UPDATE chara_profile SET world_setting = $1, updated_at = NOW() WHERE character_id = $2`,
+		setting, r.CharacterID)
 	return err
 }
 

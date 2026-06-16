@@ -252,12 +252,16 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 		}
 
 		var charaProfile *gemini.CharaProfile
+		var worldSetting string
 		if prof, err := r.GetCharaProfile(); err == nil && prof != nil {
 			charaProfile = &gemini.CharaProfile{
 				Name:              prof.Name,
 				Age:               prof.Age,
 				Gender:            prof.Gender,
 				RelationshipStory: prof.RelationshipStory,
+			}
+			if mode == "roleplay" {
+				worldSetting = prof.WorldSetting
 			}
 		}
 
@@ -312,6 +316,7 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 		messages := gemini.BuildBaseMessages(gemini.BaseMessagesParams{
 			RulePrompt:         rulePrompt,
 			CharaPrompt:        charaPrompt,
+			WorldSetting:       worldSetting,
 			StagePrompt:        stagePrompt,
 			ShiftState:         shiftState,
 			CharaProfile:       charaProfile,

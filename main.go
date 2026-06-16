@@ -419,12 +419,16 @@ func main() {
 
 		// キャラクターコアプロフィール
 		var charaProfile *gemini.CharaProfile
+		var worldSetting string
 		if prof, err := r.GetCharaProfile(); err == nil && prof != nil {
 			charaProfile = &gemini.CharaProfile{
 				Name:              prof.Name,
 				Age:               prof.Age,
 				Gender:            prof.Gender,
 				RelationshipStory: prof.RelationshipStory,
+			}
+			if mode == "roleplay" {
+				worldSetting = prof.WorldSetting
 			}
 		}
 
@@ -542,6 +546,7 @@ func main() {
 		messages := gemini.BuildBaseMessages(gemini.BaseMessagesParams{
 			RulePrompt:         rulePrompt,
 			CharaPrompt:        charaPrompt,
+			WorldSetting:       worldSetting,
 			StagePrompt:        stagePrompt,
 			CurrentScene:       currentScene,
 			SceneStory:         sceneStory,

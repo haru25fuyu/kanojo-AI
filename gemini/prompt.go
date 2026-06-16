@@ -11,6 +11,7 @@ import (
 type BaseMessagesParams struct {
 	RulePrompt         string
 	CharaPrompt        string
+	WorldSetting       string // なりきり：世界観・舞台設定（roleplay時のみ・静的な土台）
 	StagePrompt        string
 	CurrentScene       string // なりきり：話題が動くたび上書きされる現在位置
 	SceneStory         string // なりきり：会話をまたいだ物語の弧（あらすじ＋直近ビート）
@@ -101,6 +102,13 @@ func BuildBaseMessages(p BaseMessagesParams) []Message {
 		Role:    "system",
 		Content: p.CharaPrompt,
 	})
+
+	if p.WorldSetting != "" {
+		messages = append(messages, Message{
+			Role:    "system",
+			Content: "【世界観】この物語の舞台設定:\n" + p.WorldSetting + "\nこの世界の前提・ルールを守り、ここから外れた設定を勝手に持ち込まないこと。",
+		})
+	}
 
 	if p.StagePrompt != "" {
 		messages = append(messages, Message{
