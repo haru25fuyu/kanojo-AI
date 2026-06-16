@@ -13,6 +13,7 @@ type BaseMessagesParams struct {
 	CharaPrompt        string
 	StagePrompt        string
 	CurrentScene       string           // なりきり：話題が動くたび上書きされる現在位置
+	SceneStory         string           // なりきり：会話をまたいだ物語の弧（あらすじ＋直近ビート）
 	CharaInfos         []CharaInfoEntry
 	Profile            *UserProfile
 	UserInfos          []UserInfoEntry
@@ -112,6 +113,13 @@ func BuildBaseMessages(p BaseMessagesParams) []Message {
 		messages = append(messages, Message{
 			Role:    "system",
 			Content: "【現在地】今いる場所・状況: " + p.CurrentScene + "\nここを前提に進め、勝手に別の場所へ移動させないこと。",
+		})
+	}
+
+	if p.SceneStory != "" {
+		messages = append(messages, Message{
+			Role:    "system",
+			Content: "【これまでの物語】2人のあいだでここまで起きてきたこと:\n" + p.SceneStory,
 		})
 	}
 

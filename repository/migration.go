@@ -367,6 +367,27 @@ func RunMigrations(db *sqlx.DB) {
 				PRIMARY KEY (user_id, character_id)
 			)`,
 		},
+		{
+			name: "scene_story",
+			sql: `CREATE TABLE IF NOT EXISTS scene_story (
+				user_id      TEXT        NOT NULL DEFAULT 'default',
+				character_id TEXT        NOT NULL DEFAULT 'default',
+				summary      TEXT        NOT NULL DEFAULT '',
+				recent_beats TEXT[]      NOT NULL DEFAULT '{}',
+				updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				PRIMARY KEY (user_id, character_id)
+			)`,
+		},
+		{
+			name: "rule presets",
+			sql: `INSERT INTO settings (key, value) VALUES
+				('chat_mode', 'roleplay'),
+				('system_prompt_rule_roleplay', '【なりきり・物語形式ルール】
+あなたはキャラクターになりきり、相手と一緒に物語の場面を進めます。会話のセリフだけでなく、行動・仕草・情景・心理を地の文で描写してかまいません（動作や情景は *扉をそっと開ける* のようにアスタリスクで囲む）。1回の長さはチャットより長くてよいですが、独白で完結させず、必ず相手が反応・行動できる余地を残すこと。解説やメタ発言はせず、常にキャラクターの内側・物語世界の中から書きます。現在地や直前に起きたことと矛盾させず、勝手に場面を飛ばさないこと。'),
+				('system_prompt_rule_knowledge', '【知識共有形式ルール】
+相手に情報をわかりやすく共有する役割も担います。必要に応じてチャットより長く、整理された説明をしてかまいません（要点を区切る、順序立てる等）。ただし無味乾燥な解説に倒れず、キャラクターの口調や人格は保ったまま伝えること。相手の理解度に合わせ、聞かれていないことまで一方的に語りすぎないこと。')
+				ON CONFLICT (key) DO NOTHING`,
+		},
 	}
 
 	for _, q := range queries {

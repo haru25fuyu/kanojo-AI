@@ -46,6 +46,17 @@ func RunNightlyBatchLoop(repo *repository.MemoryRepository) {
 				r.UpdateRelationshipData(context.Background(), modelBatch)
 			}
 		}
+
+		// 物語ビート畳み込み（なりきり：全キャラ×全ユーザー）
+		if repo.GetSetting("chat_mode", "roleplay") == "roleplay" {
+			for _, c := range activeChars {
+				userIDs, _ := repo.GetActiveUserIDsForChara(c.ID)
+				for _, uid := range userIDs {
+					r := repo.WithIDs(uid, c.ID)
+					r.FoldSceneStoryNightly(context.Background(), modelBatch)
+				}
+			}
+		}
 	}
 }
 
@@ -179,7 +190,8 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 
 		hour := time.Now().Hour()
 		modelChat := repo.GetSetting("model_chat", "gemini-3-flash-preview")
-		rulePrompt := r.GetSetting("system_prompt_rule", "日常会話に徹してください。")
+		mode := repo.GetSetting("chat_mode", "roleplay")
+		rulePrompt := repo.GetRulePrompt(mode)
 		charaPrompt := chara.SystemPrompt
 		channelID := chara.ProactiveChannel
 		if channelID == "" {

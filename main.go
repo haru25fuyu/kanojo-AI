@@ -94,7 +94,8 @@ func main() {
 		avgTStr := repo.GetSetting("avg_threshold", "0.38")
 		maxTStr := repo.GetSetting("max_threshold", "0.50")
 		topicTStr := repo.GetSetting("topic_threshold", "0.50")
-		rulePrompt := repo.GetSetting("system_prompt_rule", "日常会話に徹してください。")
+		mode := repo.GetSetting("chat_mode", "roleplay")
+		rulePrompt := repo.GetRulePrompt(mode)
 		chara, err := r.GetCharacter(charaID)
 		var charaPrompt string
 		if err != nil || chara == nil {
@@ -275,6 +276,30 @@ func main() {
 					}
 					log.Printf("日次行動ログ保存完了: %d件", len(activities))
 				}(prevConvID, modelBatch, m.Author.ID, charaID)
+
+				// 物語ビート要約（なりきり：会話単位で筋を1本記録）
+				if mode == "roleplay" {
+					go func(cid, mbatch, uid, craid string) {
+						r := repo.WithIDs(uid, craid)
+						memories, err := r.GetRecentMemories(cid, 100)
+						if err != nil || len(memories) == 0 {
+							return
+						}
+						var lines []gemini.ExtractInfoMemory
+						for _, m := range memories {
+							lines = append(lines, gemini.ExtractInfoMemory{Role: m.Role, Content: m.Content})
+						}
+						beat, err := gemini.SummarizeSceneBeat(context.Background(), mbatch, lines)
+						if err != nil || beat == "" {
+							return
+						}
+						if err := r.AppendSceneBeat(beat); err != nil {
+							log.Printf("物語ビート保存失敗: %v", err)
+							return
+						}
+						log.Printf("物語ビート追加: %s", beat)
+					}(prevConvID, modelBatch, m.Author.ID, charaID)
+				}
 			}
 
 			if isNewTopic {
@@ -490,10 +515,11 @@ func main() {
 			}
 		}
 
-		mode := repo.GetSetting("chat_mode", "roleplay")
 		var currentScene string
+		var sceneStory string
 		if mode == "roleplay" {
 			currentScene, _ = r.GetSceneState()
+			sceneStory, _ = r.GetSceneStoryText()
 		}
 
 		messages := gemini.BuildBaseMessages(gemini.BaseMessagesParams{
@@ -501,6 +527,7 @@ func main() {
 			CharaPrompt:        charaPrompt,
 			StagePrompt:        stagePrompt,
 			CurrentScene:       currentScene,
+			SceneStory:         sceneStory,
 			CharaProfile:       charaProfile,
 			CharaInfos:         charaInfoEntries,
 			Schedules:          scheduleEntries,
