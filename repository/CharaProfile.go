@@ -44,6 +44,18 @@ func (r *MemoryRepository) UpsertCharaProfile(name string, age *int, gender, job
 	return err
 }
 
+// UpdateCharaJob は会話中に検知した職業で chara_profile.job を更新する（シフト生成の源泉を最新に保つ）。
+// 空文字は無視。行が無ければ no-op。
+func (r *MemoryRepository) UpdateCharaJob(job string) error {
+	if job == "" {
+		return nil
+	}
+	_, err := r.db.Exec(`
+		UPDATE chara_profile SET job = $1, updated_at = NOW() WHERE character_id = $2`,
+		job, r.CharacterID)
+	return err
+}
+
 // UpdateRelationshipStory はnightlyバッチからストーリーラインを更新する。
 func (r *MemoryRepository) UpdateRelationshipStory(story string) error {
 	_, err := r.db.Exec(`

@@ -304,7 +304,7 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 
 		var shiftState string
 		if mode != "roleplay" {
-			if s, ok, _ := r.ResolveShiftText(time.Now()); ok {
+			if s, ok, _ := r.ResolveShiftText(gemini.NowJST()); ok {
 				shiftState = s
 			}
 		}

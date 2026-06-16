@@ -85,7 +85,7 @@ func refillShifts(repo *repository.MemoryRepository) {
 	}
 
 	model := repo.GetSetting("model_batch", "gemini-3.1-flash-lite")
-	today := time.Now()
+	today := gemini.NowJST()
 
 	chars, err := repo.GetActiveCharacters()
 	if err != nil {

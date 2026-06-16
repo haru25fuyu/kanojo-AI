@@ -74,8 +74,7 @@ type PastMessage struct {
 }
 
 func currentTimeLabel() string {
-	jst := time.FixedZone("Asia/Tokyo", 9*60*60)
-	now := time.Now().In(jst)
+	now := NowJST()
 	weekdays := []string{"日", "月", "火", "水", "木", "金", "土"}
 	dayLabel := weekdays[now.Weekday()] + "曜日"
 	if name := jpholiday.HolidayName(now); name != "" {

@@ -16,6 +16,11 @@ import (
 
 const baseURL = "https://generativelanguage.googleapis.com/v1beta"
 
+// NowJST は日本時間(JST)の現在時刻を返す。サーバのローカルTZに依存しないよう、時刻判定は全てこれを使う。
+func NowJST() time.Time {
+	return time.Now().In(time.FixedZone("Asia/Tokyo", 9*60*60))
+}
+
 // jsonOutputInstruction はJSONのみを返すよう指示する共通プロンプト
 const jsonOutputInstruction = "マークダウン記法（```）は使用せず、生のJSONテキストのみを出力すること。"
 

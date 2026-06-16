@@ -206,7 +206,12 @@ func main() {
 						}
 						if err := r.UpsertCharaInfo(key, item.Value, item.Importance, emb); err != nil {
 							log.Printf("キャラ情報保存失敗: %v", err)
-
+						}
+						// 職業を検知したら chara_profile.job も同期
+						if key == "職業" || key == "仕事" || key == "勤務先" {
+							if err := r.UpdateCharaJob(item.Value); err != nil {
+								log.Printf("chara_profile.job 同期失敗: %v", err)
+							}
 						}
 					}
 					log.Printf("情報抽出完了: ユーザー%d件 キャラ%d件", len(result.UserInfo), len(result.CharaInfo))
@@ -529,7 +534,7 @@ func main() {
 
 		var shiftState string
 		if mode != "roleplay" {
-			if s, ok, _ := r.ResolveShiftText(time.Now()); ok {
+			if s, ok, _ := r.ResolveShiftText(gemini.NowJST()); ok {
 				shiftState = s
 			}
 		}
