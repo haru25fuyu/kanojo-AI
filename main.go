@@ -374,25 +374,14 @@ func main() {
 		}
 
 		// ── 応答モード判定（propensity）────────────────────────────────────────
-		lastUserEmb, _ := r.GetLastUserEmbedding()
-		lastAIContent, _ := r.GetLastAIMessageContent()
-		propResult := functions.ComputePropensity(functions.PropensityInput{
-			UserEmbedding:     userEmbedding,
-			LastUserEmbedding: lastUserEmb,
-			LastAIContent:     lastAIContent,
-			Status:            status,
-		})
-
-		if propResult.Mode == functions.ReplySkip {
-			emoji := functions.SkipEmoji(propResult, status)
-			s.MessageReactionAdd(m.ChannelID, m.ID, emoji)
-			debugMode := repo.GetSetting("debug_mode", "false")
-			if debugMode == "true" {
-				go s.ChannelMessageSend(m.ChannelID, fmt.Sprintf(
-					"_(skip: %s | score: %.1f)_", propResult.Reason, propResult.Score,
-				))
-			}
-			return
+		// なりきり中は摩擦系を効かせず常にフル返答。それ以外は内容ベースで short / dodge。
+		// skip（無返答）は廃止。AIは必ず返す。
+		propResult := functions.PropensityResult{Mode: functions.ReplyNormal, Reason: "roleplay_relaxed"}
+		if mode != "roleplay" {
+			propResult = functions.ComputePropensity(functions.PropensityInput{
+				UserEmbedding: userEmbedding,
+				Status:        status,
+			})
 		}
 		// ──────────────────────────────────────────────────────────────────────
 

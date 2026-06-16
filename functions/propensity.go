@@ -3,7 +3,6 @@ package functions
 import (
 	"math"
 	"math/rand"
-	"strings"
 	"sync"
 
 	"go_app/gemini"
@@ -16,16 +15,13 @@ type ReplyMode int
 const (
 	ReplyNormal ReplyMode = iota // 通常返答
 	ReplyShort                   // 短い返事（疲れ・低活力）
-	ReplySkip                    // 無返答（絵文字のみ・LLM 不使用）
 	ReplyDodge                   // 躱す（返答するが深入りしない）
 )
 
 // PropensityInput は応答モード判定の入力
 type PropensityInput struct {
-	UserEmbedding     []float64
-	LastUserEmbedding []float64 // 反復検出用（nil 可）
-	LastAIContent     string    // 締めの skip 判定用（空文字可）
-	Status            *repository.PartnerStatus
+	UserEmbedding []float64
+	Status        *repository.PartnerStatus
 }
 
 // PropensityResult は判定結果
@@ -34,22 +30,6 @@ type PropensityResult struct {
 	IsHeavy bool    // 重い話かどうか（外部での追加ロジック用）
 	Score   float64 // デバッグ用スコア
 	Reason  string  // デバッグ用理由
-}
-
-// SkipEmoji は skip 時に付ける絵文字を返す
-func SkipEmoji(r PropensityResult, status *repository.PartnerStatus) string {
-	if r.Reason == "mutual_closing" {
-		return "🌙"
-	}
-	if status != nil {
-		switch {
-		case status.Fatigue >= 7000:
-			return "😴"
-		case status.Affection >= 6000:
-			return "❤️" // 好きだけど今は無理
-		}
-	}
-	return "💭"
 }
 
 // DodgeInstruction は dodge モード時にメッセージへ追加する指示文
@@ -66,7 +46,6 @@ func ShortInstruction() string {
 // クラスター埋め込み
 // ─────────────────────────────────────────────────────────────────────────────
 
-// clusterSeeds は各クラスターのシードフレーズ
 var clusterSeeds = map[string][]string{
 	"heavy": {
 		"死にたい、消えたい、もうだめだ",
@@ -82,11 +61,6 @@ var clusterSeeds = map[string][]string{
 		"おはよう！",
 		"こんにちは、元気？",
 		"久しぶり、やっほー",
-	},
-	"closing": {
-		"おやすみなさい",
-		"またね、じゃあね",
-		"バイバイ、またあした",
 	},
 	"question": {
 		"どう思う？教えて",
@@ -168,19 +142,16 @@ func cosineSim(a, b []float64) float64 {
 // 判定本体
 // ─────────────────────────────────────────────────────────────────────────────
 
-// スコア帯の境界値（SQL の settings で上書き可能にする余地があるが、まず固定で運用）
 const (
-	threshNormal = 12.0  // score >= threshNormal → normal
-	threshShort  = -5.0  // score >= threshShort  → short
-	threshSkip   = -25.0 // score >= threshSkip   → skip/dodge
-	// score < threshSkip → deep skip/dodge
+	threshNormal = 12.0 // score >= threshNormal → normal
+	threshShort  = -5.0 // score >= threshShort  → short
+	// score < threshShort → dodge（skip は廃止。AIは必ず返す）
 )
 
-// 義務ガードの閾値
 const mandatoryThreshold = 0.57
 
 // ComputePropensity はユーザー入力の埋め込みと各種コンテキストから応答モードを決定する。
-// クラスターが未準備の場合は ReplyNormal にフォールバックする。
+// skip（無返答）は廃止。クラスターが未準備の場合は ReplyNormal にフォールバックする。
 func ComputePropensity(p PropensityInput) PropensityResult {
 	clusterMu.RLock()
 	ready := clustersReady
@@ -194,7 +165,6 @@ func ComputePropensity(p PropensityInput) PropensityResult {
 	// ── 各クラスターとの類似度 ─────────────────────────────────────────────
 	heavySim := cosineSim(p.UserEmbedding, embs["heavy"])
 	fillerSim := cosineSim(p.UserEmbedding, embs["filler"])
-	closingSim := cosineSim(p.UserEmbedding, embs["closing"])
 	greetingSim := cosineSim(p.UserEmbedding, embs["greeting"])
 	questionSim := cosineSim(p.UserEmbedding, embs["question"])
 	affectionSim := cosineSim(p.UserEmbedding, embs["affection"])
@@ -206,45 +176,25 @@ func ComputePropensity(p PropensityInput) PropensityResult {
 		return PropensityResult{Mode: ReplyNormal, Reason: "mandatory_guard"}
 	}
 
-	// ── 締めの相互 skip ─────────────────────────────────────────────────────
-	// 今の発言が「締め」 AND 直前のAI発言も「締め」内容 → skip（お互いおやすみ完了）
-	if closingSim > 0.55 && p.LastAIContent != "" && isClosingContent(p.LastAIContent) {
-		return PropensityResult{Mode: ReplySkip, Reason: "mutual_closing", Score: -100}
-	}
-
 	// ── プロペンシティスコア ───────────────────────────────────────────────
 	var score float64
 
-	// コンテンツ成分
 	score -= heavySim * 35
 	score -= fillerSim * 20
 
-	// status 成分（各値の意味：mood は -10000〜10000、他は 0〜10000）
 	if s := p.Status; s != nil {
-		score += float64(s.Mood) / 800      // 気分が良いほど +
-		score -= float64(s.Stress) / 1000   // ストレスが高いほど -
-		score -= float64(s.Fatigue) / 1200  // 疲労が高いほど -
-		score += float64(s.Energy) / 1200   // 活力が高いほど +
-		score += float64(s.Affection) / 800 // 好きだから返したい（逆相関で skip しにくい）
+		score += float64(s.Mood) / 800
+		score -= float64(s.Stress) / 1000
+		score -= float64(s.Fatigue) / 1200
+		score += float64(s.Energy) / 1200
+		score += float64(s.Affection) / 800
 	}
 
-	// 反復ペナルティ：直前と同じ内容を繰り返してる → skip 寄りに
-	if len(p.LastUserEmbedding) > 0 {
-		repSim := cosineSim(p.UserEmbedding, p.LastUserEmbedding)
-		switch {
-		case repSim > 0.88:
-			score -= 28 // ほぼ同一内容
-		case repSim > 0.75:
-			score -= 14
-		}
-	}
-
-	// 確率ノイズ（±5）：毎回同じ判定にならず、"たまにそっけない" が自然に出る
 	noise := (rand.Float64() - 0.5) * 10
 	finalScore := score + noise
 	isHeavy := heavySim > 0.42
 
-	// ── 帯分け ─────────────────────────────────────────────────────────────
+	// ── 帯分け（skip なし。最低でも dodge で返す）─────────────────────────
 	var mode ReplyMode
 	var reason string
 
@@ -257,45 +207,20 @@ func ComputePropensity(p PropensityInput) PropensityResult {
 		mode = ReplyShort
 		reason = "score_short"
 
-	case finalScore >= threshSkip:
+	default:
 		if isHeavy {
 			if p.Status != nil && p.Status.Trust >= 4000 {
-				// 重い話 × 高 trust → 正面から受け止める
 				mode = ReplyNormal
 				reason = "heavy_high_trust"
 			} else {
-				// 重い話 × 低 trust → 躱す（絶対 skip にしない）
 				mode = ReplyDodge
 				reason = "heavy_low_trust"
 			}
 		} else {
-			mode = ReplySkip
-			reason = "score_skip"
-		}
-
-	default: // score < threshSkip（かなり悪いコンディション）
-		if isHeavy {
-			mode = ReplyDodge // 重い話はどんな状況でも skip にしない
-			reason = "heavy_forced_dodge"
-		} else {
-			mode = ReplySkip
-			reason = "score_deep_skip"
+			mode = ReplyDodge
+			reason = "score_dodge"
 		}
 	}
 
 	return PropensityResult{Mode: mode, IsHeavy: isHeavy, Score: finalScore, Reason: reason}
-}
-
-// isClosingContent は文字列が締め・別れの内容かをキーワードで判定する（lastAIContent 用）
-func isClosingContent(text string) bool {
-	keywords := []string{
-		"おやすみ", "またね", "じゃあね", "バイバイ",
-		"行ってきます", "またあした", "またあとで", "お休み",
-	}
-	for _, kw := range keywords {
-		if strings.Contains(text, kw) {
-			return true
-		}
-	}
-	return false
 }
