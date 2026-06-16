@@ -294,9 +294,18 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 		}
 
 		var dailyLog []string
-		if logs, err := r.GetTodayDailyLog(); err == nil {
-			for _, l := range logs {
-				dailyLog = append(dailyLog, l.Event)
+		if mode != "roleplay" {
+			if logs, err := r.GetTodayDailyLog(); err == nil {
+				for _, l := range logs {
+					dailyLog = append(dailyLog, l.Event)
+				}
+			}
+		}
+
+		var shiftState string
+		if mode != "roleplay" {
+			if s, ok, _ := r.ResolveShiftText(time.Now()); ok {
+				shiftState = s
 			}
 		}
 
@@ -304,6 +313,7 @@ func RunProactiveLoop(repo *repository.MemoryRepository, dg *discordgo.Session, 
 			RulePrompt:         rulePrompt,
 			CharaPrompt:        charaPrompt,
 			StagePrompt:        stagePrompt,
+			ShiftState:         shiftState,
 			CharaProfile:       charaProfile,
 			Profile:            profile,
 			UserInfos:          userInfoEntries,

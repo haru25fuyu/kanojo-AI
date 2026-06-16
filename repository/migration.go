@@ -379,6 +379,33 @@ func RunMigrations(db *sqlx.DB) {
 			)`,
 		},
 		{
+			name: "character_shift",
+			sql: `CREATE TABLE IF NOT EXISTS character_shift (
+				character_id TEXT        NOT NULL DEFAULT 'default',
+				date         DATE        NOT NULL,
+				bands        JSONB       NOT NULL DEFAULT '[]',
+				created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				PRIMARY KEY (character_id, date)
+			)`,
+		},
+		{
+			name: "shift_batch_jobs",
+			sql: `CREATE TABLE IF NOT EXISTS shift_batch_jobs (
+				id           BIGSERIAL   PRIMARY KEY,
+				character_id TEXT        NOT NULL DEFAULT 'default',
+				job_name     TEXT        NOT NULL,
+				dates        TEXT[]      NOT NULL DEFAULT '{}',
+				status       TEXT        NOT NULL DEFAULT 'pending',
+				created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			)`,
+		},
+		{
+			name: "shift_batch_jobs status index",
+			sql: `CREATE INDEX IF NOT EXISTS shift_batch_jobs_status_idx
+				ON shift_batch_jobs (status)`,
+		},
+		{
 			name: "rule presets",
 			sql: `INSERT INTO settings (key, value) VALUES
 				('chat_mode', 'roleplay'),

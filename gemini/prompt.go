@@ -14,6 +14,7 @@ type BaseMessagesParams struct {
 	StagePrompt        string
 	CurrentScene       string           // なりきり：話題が動くたび上書きされる現在位置
 	SceneStory         string           // なりきり：会話をまたいだ物語の弧（あらすじ＋直近ビート）
+	ShiftState         string           // 現実系：現在のシフト状態（勤務中・就寝中など）
 	CharaInfos         []CharaInfoEntry
 	Profile            *UserProfile
 	UserInfos          []UserInfoEntry
@@ -106,6 +107,13 @@ func BuildBaseMessages(p BaseMessagesParams) []Message {
 		messages = append(messages, Message{
 			Role:    "system",
 			Content: p.StagePrompt,
+		})
+	}
+
+	if p.ShiftState != "" {
+		messages = append(messages, Message{
+			Role:    "system",
+			Content: "【今の状況】" + p.ShiftState + "\nこの予定を前提に自然に振る舞うこと。わざわざ予定を読み上げず、言動の端ににじませる程度でよい。",
 		})
 	}
 
