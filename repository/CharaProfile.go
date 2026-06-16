@@ -10,6 +10,7 @@ type CharaProfile struct {
 	Name              string    `db:"name"`
 	Age               *int      `db:"age"`
 	Gender            string    `db:"gender"`
+	Job               string    `db:"job"`
 	RelationshipStory string    `db:"relationship_story"`
 	UpdatedAt         time.Time `db:"updated_at"`
 }
@@ -18,7 +19,7 @@ type CharaProfile struct {
 func (r *MemoryRepository) GetCharaProfile() (*CharaProfile, error) {
 	var profile CharaProfile
 	err := r.db.Get(&profile, `
-		SELECT character_id, name, age, gender, relationship_story, updated_at
+		SELECT character_id, name, age, gender, job, relationship_story, updated_at
 		FROM chara_profile
 		WHERE character_id = $1`, r.CharacterID)
 	if err != nil {
@@ -29,16 +30,17 @@ func (r *MemoryRepository) GetCharaProfile() (*CharaProfile, error) {
 
 // UpsertCharaProfile はキャラクターのコア情報を保存・更新する。
 // 空文字・nil は既存値を上書きしない（UserProfile と同じ方針）。
-func (r *MemoryRepository) UpsertCharaProfile(name string, age *int, gender string) error {
+func (r *MemoryRepository) UpsertCharaProfile(name string, age *int, gender, job string) error {
 	query := `
-		INSERT INTO chara_profile (character_id, name, age, gender, updated_at)
-		VALUES ($1, $2, $3, $4, NOW())
+		INSERT INTO chara_profile (character_id, name, age, gender, job, updated_at)
+		VALUES ($1, $2, $3, $4, $5, NOW())
 		ON CONFLICT (character_id) DO UPDATE SET
 			name       = COALESCE(NULLIF(EXCLUDED.name, ''),   chara_profile.name),
 			age        = COALESCE(EXCLUDED.age,                 chara_profile.age),
 			gender     = COALESCE(NULLIF(EXCLUDED.gender, ''), chara_profile.gender),
+			job        = COALESCE(NULLIF(EXCLUDED.job, ''),    chara_profile.job),
 			updated_at = NOW()`
-	_, err := r.db.Exec(query, r.CharacterID, name, age, gender)
+	_, err := r.db.Exec(query, r.CharacterID, name, age, gender, job)
 	return err
 }
 

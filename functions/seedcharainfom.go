@@ -30,11 +30,11 @@ func SeedCharaInfoFromPrompt(repo *repository.MemoryRepository, chara repository
 	if err != nil {
 		log.Printf("[seed] キャラ[%s] chara_profile 抽出失敗: %v", chara.ID, err)
 	} else if profile != nil {
-		if err := r.UpsertCharaProfile(profile.Name, profile.Age, profile.Gender); err != nil {
+		if err := r.UpsertCharaProfile(profile.Name, profile.Age, profile.Gender, profile.Job); err != nil {
 			log.Printf("[seed] キャラ[%s] chara_profile 保存失敗: %v", chara.ID, err)
 		} else {
-			log.Printf("[seed] キャラ[%s] chara_profile 保存完了: name=%s age=%v gender=%s",
-				chara.ID, profile.Name, profile.Age, profile.Gender)
+			log.Printf("[seed] キャラ[%s] chara_profile 保存完了: name=%s age=%v gender=%s job=%s",
+				chara.ID, profile.Name, profile.Age, profile.Gender, profile.Job)
 		}
 	}
 

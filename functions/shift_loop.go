@@ -111,7 +111,12 @@ func refillShifts(repo *repository.MemoryRepository) {
 			continue
 		}
 
-		jobName, err := gemini.SubmitShiftBatch(context.Background(), model, c.Name, c.SystemPrompt, missing)
+		var job string
+		if prof, err := r.GetCharaProfile(); err == nil && prof != nil {
+			job = prof.Job
+		}
+
+		jobName, err := gemini.SubmitShiftBatch(context.Background(), model, c.Name, job, c.SystemPrompt, missing)
 		if err != nil {
 			log.Printf("[シフト] バッチ投入失敗 chara=%s: %v", c.ID, err)
 			continue

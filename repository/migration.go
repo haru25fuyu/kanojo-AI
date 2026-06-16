@@ -329,6 +329,10 @@ func RunMigrations(db *sqlx.DB) {
 			sql:  `ALTER TABLE chara_profile ADD COLUMN IF NOT EXISTS relationship_story TEXT NOT NULL DEFAULT ''`,
 		},
 		{
+			name: "chara_profile add job",
+			sql:  `ALTER TABLE chara_profile ADD COLUMN IF NOT EXISTS job TEXT NOT NULL DEFAULT ''`,
+		},
+		{
 			name: "relationship_events",
 			sql: `CREATE TABLE IF NOT EXISTS relationship_events (
         id           BIGSERIAL   PRIMARY KEY,

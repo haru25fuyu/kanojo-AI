@@ -39,13 +39,13 @@ type ShiftBatchStatus struct {
 
 // SubmitShiftBatch は指定日付ぶんの勤務予定生成を inline バッチで投入し、ジョブ名(batches/xxx)を返す。
 // 作成は非冪等なので、呼び出し側は返ったジョブ名を必ず記録し、二重投入しないこと。
-func SubmitShiftBatch(ctx context.Context, model, charaName, systemPrompt string, dates []time.Time) (string, error) {
+func SubmitShiftBatch(ctx context.Context, model, charaName, job, systemPrompt string, dates []time.Time) (string, error) {
 	if len(dates) == 0 {
 		return "", fmt.Errorf("dates が空")
 	}
 
 	weekdays := []string{"日", "月", "火", "水", "木", "金", "土"}
-	sysText := shiftSystemPrompt(charaName, systemPrompt)
+	sysText := shiftSystemPrompt(charaName, job, systemPrompt)
 
 	requests := make([]map[string]interface{}, 0, len(dates))
 	for _, d := range dates {
@@ -159,26 +159,30 @@ func PollShiftBatch(ctx context.Context, jobName string) (*ShiftBatchStatus, err
 
 // ── 内部ヘルパ ──────────────────────────────────────────
 
-func shiftSystemPrompt(charaName, systemPrompt string) string {
+func shiftSystemPrompt(charaName, job, systemPrompt string) string {
+	jobLine := ""
+	if strings.TrimSpace(job) != "" {
+		jobLine = "\n\n【職業】\n" + job
+	}
 	return fmt.Sprintf(`あなたは「%s」というキャラクターの勤務予定（シフト）を設計するAIです。
-以下のキャラクター設定を読み、指定された日にこの人物が「働いている時間帯」だけを出力してください。
+以下のキャラクター設定（と職業）を読み、指定された日にこの人物が「働いている時間帯」だけを出力してください。
 
 【キャラクター設定】
-%s
+%s%s
 
 【ルール】
 - 出力するのは勤務（仕事・バイト・通学など、拘束される時間）の時間帯のみ。睡眠や自由時間は出力しない（勤務以外は自動的に自由扱い）。
+- 【職業】が明記されていればそれを最優先で使う。無ければ人物像から職業・生活リズムを推測する。
 - 勤務がない日（休み）は空配列 [] にする。
 - 1日に複数の勤務帯があってよい（中抜け・2本立てのシフト等）。なければ1本。
 - 時刻は "HH:MM" の24時間表記。日をまたぐ夜勤は当日内の "24:00" までで切ること（翌日ぶんは別日として扱う）。
 - label は補足（早番・遅番・日勤・夜勤・通学 など）を任意で入れてよい。空でもよい。
-- 設定から職業・生活リズムを推測する。明確な職業がなければ人物像から自然な勤務パターンを作る（在宅・フリー・学生・無職などは勤務なしの日が多くてよい）。
 - 曜日に応じて現実的に変える（平日と休日で違ってよい）。ただし大枠の生活リズムは崩しすぎない。
 - 土日・祝日も考慮する。祝日は休みになりやすいが、接客・飲食・医療・サービス業など職種によっては通常どおり勤務する。職業から自然に判断すること。
 
 以下のJSON形式のみを出力（前置き・マークダウン・説明は一切不要）：
 {"work":[{"start":"08:30","end":"18:00","label":"日勤"}]}
-（休みの日の例：{"work":[]}）`, charaName, systemPrompt)
+（休みの日の例：{"work":[]}）`, charaName, systemPrompt, jobLine)
 }
 
 func extractCandidateText(r *genContentResp) string {

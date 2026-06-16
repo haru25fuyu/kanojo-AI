@@ -798,6 +798,7 @@ type CharaProfileResult struct {
 	Name   string `json:"name"`
 	Age    *int   `json:"age"`
 	Gender string `json:"gender"`
+	Job    string `json:"job"`
 }
 
 // ExtractCharaProfile は system_prompt からキャラクターの基本プロフィールを抽出する。
@@ -813,6 +814,7 @@ func ExtractCharaProfile(ctx context.Context, model string, charaPrompt string) 
   "name":   "キャラクターの名前",
   "age":    年齢（整数）または null,
   "gender": "性別",
+  "job":    "職業・仕事（簡潔に。例：市役所の一般行政職。不明なら空文字）"
 }`,
 		},
 		{

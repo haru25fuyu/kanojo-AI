@@ -12,9 +12,9 @@ type BaseMessagesParams struct {
 	RulePrompt         string
 	CharaPrompt        string
 	StagePrompt        string
-	CurrentScene       string           // なりきり：話題が動くたび上書きされる現在位置
-	SceneStory         string           // なりきり：会話をまたいだ物語の弧（あらすじ＋直近ビート）
-	ShiftState         string           // 現実系：現在のシフト状態（勤務中・就寝中など）
+	CurrentScene       string // なりきり：話題が動くたび上書きされる現在位置
+	SceneStory         string // なりきり：会話をまたいだ物語の弧（あらすじ＋直近ビート）
+	ShiftState         string // 現実系：現在のシフト状態（勤務中・休みなど）
 	CharaInfos         []CharaInfoEntry
 	Profile            *UserProfile
 	UserInfos          []UserInfoEntry
