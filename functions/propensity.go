@@ -2,7 +2,6 @@ package functions
 
 import (
 	"math"
-	"math/rand"
 	"sync"
 
 	"go_app/gemini"
@@ -13,22 +12,22 @@ import (
 type ReplyMode int
 
 const (
-	ReplyNormal ReplyMode = iota // 通常返答
-	ReplyShort                   // 短い返事（疲れ・低活力）
-	ReplyDodge                   // 躱す（返答するが深入りしない）
+	ReplyNormal ReplyMode = iota // 通常返答（フル）
+	ReplyShort                   // 短い返事（締め・軽い相づちにレジスタを合わせる時）
+	ReplyDodge                   // 躱す（重い話を信頼が浅いうちは深入りせず受け流す。返事自体はする）
 )
 
 // PropensityInput は応答モード判定の入力
 type PropensityInput struct {
 	UserEmbedding []float64
-	Status        *repository.PartnerStatus
+	Status        *repository.PartnerStatus // dodge の trust ゲート用（nil 可）
 }
 
 // PropensityResult は判定結果
 type PropensityResult struct {
 	Mode    ReplyMode
 	IsHeavy bool    // 重い話かどうか（外部での追加ロジック用）
-	Score   float64 // デバッグ用スコア
+	Score   float64 // デバッグ用（v2 では未使用・常に0）
 	Reason  string  // デバッグ用理由
 }
 
@@ -37,15 +36,17 @@ func DodgeInstruction() string {
 	return "（この話題には自然にはぐらかして返答して。深入りせず、さらっと受け流すか話題を変えて。reply_type は \"normal\" にすること）"
 }
 
-// ShortInstruction は short モード時にメッセージへ追加する指示文
+// ShortInstruction は short モード時にメッセージへ追加する指示文。
+// 「疲れているから」ではなく、締めや軽い相づちにレジスタを合わせて短くする意図。
 func ShortInstruction() string {
-	return "（今は疲れてるか気分が乗らない。1〜2文の短い返事だけでいい。reply_type は \"short\" にすること）"
+	return "（「おやすみ」などの締めや軽い相づちには、長く返さず1〜2文で軽く返して。reply_type は \"short\" にすること）"
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // クラスター埋め込み
 // ─────────────────────────────────────────────────────────────────────────────
 
+// clusterSeeds は各クラスターのシードフレーズ
 var clusterSeeds = map[string][]string{
 	"heavy": {
 		"死にたい、消えたい、もうだめだ",
@@ -61,6 +62,11 @@ var clusterSeeds = map[string][]string{
 		"おはよう！",
 		"こんにちは、元気？",
 		"久しぶり、やっほー",
+	},
+	"closing": {
+		"おやすみなさい",
+		"またね、じゃあね",
+		"バイバイ、またあした",
 	},
 	"question": {
 		"どう思う？教えて",
@@ -86,8 +92,7 @@ func InitClusters() {
 	go func() {
 		embs := make(map[string][]float64)
 		for name, seeds := range clusterSeeds {
-			c := computeCentroid(seeds)
-			if c != nil {
+			if c := computeCentroid(seeds); c != nil {
 				embs[name] = c
 			}
 		}
@@ -101,8 +106,7 @@ func InitClusters() {
 func computeCentroid(texts []string) []float64 {
 	var vecs [][]float64
 	for _, t := range texts {
-		v := gemini.GetEmbedding(t)
-		if len(v) > 0 {
+		if v := gemini.GetEmbedding(t); len(v) > 0 {
 			vecs = append(vecs, v)
 		}
 	}
@@ -139,19 +143,25 @@ func cosineSim(a, b []float64) float64 {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 判定本体
+// 判定本体（v2）
+//   可用性ベースの摩擦（skip＝無返答 / 疲労による短文化）は廃止。AIは常に返す。
+//   残すのは内容ベースの2つだけ。
 // ─────────────────────────────────────────────────────────────────────────────
 
 const (
-	threshNormal = 12.0 // score >= threshNormal → normal
-	threshShort  = -5.0 // score >= threshShort  → short
-	// score < threshShort → dodge（skip は廃止。AIは必ず返す）
+	mandatoryThreshold  = 0.57 // 挨拶・質問・好意 → 必ず normal
+	heavyThreshold      = 0.42 // これ以上で「重い話」とみなす
+	lightThreshold      = 0.50 // 締め・軽い相づち → short
+	dodgeTrustThreshold = 4000 // 重い話で、これ未満の信頼なら躱す
 )
 
-const mandatoryThreshold = 0.57
-
-// ComputePropensity はユーザー入力の埋め込みと各種コンテキストから応答モードを決定する。
-// skip（無返答）は廃止。クラスターが未準備の場合は ReplyNormal にフォールバックする。
+// ComputePropensity はユーザー入力の内容から応答モードを決める。
+//   - 締め・軽い相づち（おやすみ等）→ short（レジスタを合わせて短く。疲れだからではない）
+//   - 重い話 × 信頼が浅い          → dodge（深入りせず受け流す。返事自体はする）
+//   - それ以外                     → normal
+//
+// skip（無返答）や status（疲労・気分）による短文化は行わない。
+// クラスター未準備の場合は ReplyNormal にフォールバックする。
 func ComputePropensity(p PropensityInput) PropensityResult {
 	clusterMu.RLock()
 	ready := clustersReady
@@ -162,65 +172,32 @@ func ComputePropensity(p PropensityInput) PropensityResult {
 		return PropensityResult{Mode: ReplyNormal, Reason: "cluster_not_ready"}
 	}
 
-	// ── 各クラスターとの類似度 ─────────────────────────────────────────────
 	heavySim := cosineSim(p.UserEmbedding, embs["heavy"])
 	fillerSim := cosineSim(p.UserEmbedding, embs["filler"])
+	closingSim := cosineSim(p.UserEmbedding, embs["closing"])
 	greetingSim := cosineSim(p.UserEmbedding, embs["greeting"])
 	questionSim := cosineSim(p.UserEmbedding, embs["question"])
 	affectionSim := cosineSim(p.UserEmbedding, embs["affection"])
 
-	// ── 義務ガード：挨拶・質問・好意/お礼/謝罪 → 必ず normal で返す ────────
+	// 挨拶・質問・好意/お礼/謝罪 → 必ず normal（ちゃんと向き合う）
 	if greetingSim > mandatoryThreshold ||
 		questionSim > mandatoryThreshold ||
 		affectionSim > mandatoryThreshold {
 		return PropensityResult{Mode: ReplyNormal, Reason: "mandatory_guard"}
 	}
 
-	// ── プロペンシティスコア ───────────────────────────────────────────────
-	var score float64
-
-	score -= heavySim * 35
-	score -= fillerSim * 20
-
-	if s := p.Status; s != nil {
-		score += float64(s.Mood) / 800
-		score -= float64(s.Stress) / 1000
-		score -= float64(s.Fatigue) / 1200
-		score += float64(s.Energy) / 1200
-		score += float64(s.Affection) / 800
-	}
-
-	noise := (rand.Float64() - 0.5) * 10
-	finalScore := score + noise
-	isHeavy := heavySim > 0.42
-
-	// ── 帯分け（skip なし。最低でも dodge で返す）─────────────────────────
-	var mode ReplyMode
-	var reason string
-
-	switch {
-	case finalScore >= threshNormal:
-		mode = ReplyNormal
-		reason = "score_normal"
-
-	case finalScore >= threshShort:
-		mode = ReplyShort
-		reason = "score_short"
-
-	default:
-		if isHeavy {
-			if p.Status != nil && p.Status.Trust >= 4000 {
-				mode = ReplyNormal
-				reason = "heavy_high_trust"
-			} else {
-				mode = ReplyDodge
-				reason = "heavy_low_trust"
-			}
-		} else {
-			mode = ReplyDodge
-			reason = "score_dodge"
+	// 重い話 → 信頼が浅ければ躱す、深ければ正面から受け止める
+	if heavySim > heavyThreshold {
+		if p.Status != nil && p.Status.Trust >= dodgeTrustThreshold {
+			return PropensityResult{Mode: ReplyNormal, IsHeavy: true, Reason: "heavy_high_trust"}
 		}
+		return PropensityResult{Mode: ReplyDodge, IsHeavy: true, Reason: "heavy_low_trust"}
 	}
 
-	return PropensityResult{Mode: mode, IsHeavy: isHeavy, Score: finalScore, Reason: reason}
+	// 締め・軽い相づち → レジスタを合わせて短く
+	if closingSim > lightThreshold || fillerSim > lightThreshold {
+		return PropensityResult{Mode: ReplyShort, Reason: "light_register"}
+	}
+
+	return PropensityResult{Mode: ReplyNormal, Reason: "normal"}
 }
