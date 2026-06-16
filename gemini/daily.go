@@ -3,6 +3,7 @@ package gemini
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -15,7 +16,7 @@ func ExtractDailyActivities(ctx context.Context, model string, memories []Extrac
 	var sb strings.Builder
 	for _, m := range memories {
 		if m.Role == "user" {
-			sb.WriteString("user: " + m.Content + "\n")
+			fmt.Fprintf(&sb, "user: %s\n", m.Content)
 		}
 	}
 

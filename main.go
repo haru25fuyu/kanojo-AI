@@ -490,10 +490,17 @@ func main() {
 			}
 		}
 
+		mode := repo.GetSetting("chat_mode", "roleplay")
+		var currentScene string
+		if mode == "roleplay" {
+			currentScene, _ = r.GetSceneState()
+		}
+
 		messages := gemini.BuildBaseMessages(gemini.BaseMessagesParams{
 			RulePrompt:         rulePrompt,
 			CharaPrompt:        charaPrompt,
 			StagePrompt:        stagePrompt,
+			CurrentScene:       currentScene,
 			CharaProfile:       charaProfile,
 			CharaInfos:         charaInfoEntries,
 			Schedules:          scheduleEntries,
@@ -595,6 +602,34 @@ func main() {
 				log.Printf("ステータス更新失敗: %v", err)
 			}
 		}(userInput, userEmbedding, aiResponse, convID, finalDelta)
+
+		// 現在地トラッキング（なりきり：話題が動いた時だけ抽出して上書き）
+		if isNewTopic && mode == "roleplay" {
+			go func(uid, craid, mbatch string, ctxMem []repository.Memory, uin, air string) {
+				rr := repo.WithIDs(uid, craid)
+				prevLoc, _ := rr.GetSceneState()
+				if len(ctxMem) > 12 {
+					ctxMem = ctxMem[len(ctxMem)-12:]
+				}
+				var lines []gemini.ExtractInfoMemory
+				for _, mm := range ctxMem {
+					lines = append(lines, gemini.ExtractInfoMemory{Role: mm.Role, Content: mm.Content})
+				}
+				lines = append(lines,
+					gemini.ExtractInfoMemory{Role: "user", Content: uin},
+					gemini.ExtractInfoMemory{Role: "assistant", Content: air},
+				)
+				loc, err := gemini.ExtractCurrentLocation(context.Background(), mbatch, lines, prevLoc)
+				if err != nil || loc == "" {
+					return
+				}
+				if err := rr.UpsertSceneLocation(loc); err != nil {
+					log.Printf("現在地保存失敗: %v", err)
+					return
+				}
+				log.Printf("現在地更新: %s", loc)
+			}(m.Author.ID, charaID, modelBatch, pastMemories, userInput, aiResponse)
+		}
 	})
 
 	if err = dg.Open(); err != nil {

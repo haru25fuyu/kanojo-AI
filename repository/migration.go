@@ -357,6 +357,16 @@ func RunMigrations(db *sqlx.DB) {
 				UNIQUE (user_id, character_id, event, date)
 			)`,
 		},
+		{
+			name: "scene_state",
+			sql: `CREATE TABLE IF NOT EXISTS scene_state (
+				user_id      TEXT        NOT NULL DEFAULT 'default',
+				character_id TEXT        NOT NULL DEFAULT 'default',
+				location     TEXT        NOT NULL DEFAULT '',
+				updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				PRIMARY KEY (user_id, character_id)
+			)`,
+		},
 	}
 
 	for _, q := range queries {

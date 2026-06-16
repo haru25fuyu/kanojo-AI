@@ -12,6 +12,7 @@ type BaseMessagesParams struct {
 	RulePrompt         string
 	CharaPrompt        string
 	StagePrompt        string
+	CurrentScene       string           // なりきり：話題が動くたび上書きされる現在位置
 	CharaInfos         []CharaInfoEntry
 	Profile            *UserProfile
 	UserInfos          []UserInfoEntry
@@ -104,6 +105,13 @@ func BuildBaseMessages(p BaseMessagesParams) []Message {
 		messages = append(messages, Message{
 			Role:    "system",
 			Content: p.StagePrompt,
+		})
+	}
+
+	if p.CurrentScene != "" {
+		messages = append(messages, Message{
+			Role:    "system",
+			Content: "【現在地】今いる場所・状況: " + p.CurrentScene + "\nここを前提に進め、勝手に別の場所へ移動させないこと。",
 		})
 	}
 
